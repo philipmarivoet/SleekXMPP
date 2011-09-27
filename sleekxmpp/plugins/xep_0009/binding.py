@@ -92,38 +92,51 @@ def _py2xml(*args):
 def xml2py(params):
     namespace = 'jabber:iq:rpc'
     vals = []
+    
     for param in params.findall('{%s}param' % namespace):
         vals.append(_xml2py(param.find('{%s}value' % namespace)))
+    
     return vals
 
 def _xml2py(value):
     namespace = 'jabber:iq:rpc'
+
     if value.find('{%s}nil' % namespace) is not None:
         return None
+
     if value.find('{%s}i4' % namespace) is not None:
         return int(value.find('{%s}i4' % namespace).text)
+
     if value.find('{%s}int' % namespace) is not None:
         return int(value.find('{%s}int' % namespace).text)
+
     if value.find('{%s}boolean' % namespace) is not None:
         return bool(value.find('{%s}boolean' % namespace).text)
+
     if value.find('{%s}string' % namespace) is not None:
         return value.find('{%s}string' % namespace).text
+
     if value.find('{%s}double' % namespace) is not None:
         return float(value.find('{%s}double' % namespace).text)
-    if value.find('{%s}base64') is not None:
-        return rpcbase64(value.find('Base64' % namespace).text)
+
+    if value.find('{%s}base64' % namespace) is not None:
+        return rpcbase64(value.find('{%s}base64' % namespace).text)
+
     if value.find('{%s}dateTime.iso8601') is not None:
         return rpctime(value.find('{%s}dateTime.iso8601'))
+
     if value.find('{%s}struct' % namespace) is not None:
         struct = {}
         for member in value.find('{%s}struct' % namespace).findall('{%s}member' % namespace):
             struct[member.find('{%s}name' % namespace).text] = _xml2py(member.find('{%s}value' % namespace))
         return struct
+
     if value.find('{%s}array' % namespace) is not None:
         array = []
         for val in value.find('{%s}array' % namespace).find('{%s}data' % namespace).findall('{%s}value' % namespace):
             array.append(_xml2py(val))
         return array
+
     raise ValueError()
 
 
@@ -135,14 +148,13 @@ class rpcbase64(object):
         self.data = data
 
     def decode(self):
-        return base64.decodestring(self.data)
+        return base64.b64decode(self.data)
 
     def __str__(self):
         return self.decode()
 
     def encoded(self):
         return self.data
-
 
 
 class rpctime(object):
