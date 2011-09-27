@@ -210,6 +210,14 @@ class AuthorizationException(RemoteException):
     pass
 
 
+class UnavailableException(RemoteException):
+    '''
+    Exception raised when the callee is not available to respond 
+    to remote invocations
+    '''
+    pass
+
+
 class TimeoutException(Exception):
     '''
     Exception raised when the synchronous execution of a method takes
@@ -427,15 +435,13 @@ class RemoteSession(object):
     A context object for a Jabber-RPC session.
     '''
 
-
     def __init__(self, client, session_close_callback):
         '''
         Initializes a new RPC session.
 
         Arguments:
             client -- The SleekXMPP client associated with this session.
-            session_close_callback -- A callback called when the
-                session is closed.
+            session_close_callback -- A callback called when the session is closed.
         '''
         self._client = client
         self._session_close_callback = session_close_callback
@@ -570,7 +576,6 @@ class RemoteSession(object):
         '''
         Closes this session.
         '''
-        self._client.disconnect(False)
         self._session_close_callback()
 
     def _on_jabber_rpc_method_call(self, iq):
@@ -614,6 +619,9 @@ class RemoteSession(object):
         iq.enable('rpc_query')
         args = xml2py(iq['rpc_query']['method_response']['params'])
         pid = iq['id']
+
+        log.debug("_on_jabber_rpc_method_response: %s", pid)
+        
         with self._lock:
             callback = self._callbacks[pid]
             del self._callbacks[pid]
@@ -632,7 +640,7 @@ class RemoteSession(object):
             pid = iq['id']
             with self._lock:
                 callback = self._callbacks[pid]
-                del self._callbacks[pid]
+                self.forget_callback(pid)
             if(len(args) > 0):
                 callback.set_value(args[0])
             else:
@@ -652,70 +660,79 @@ class RemoteSession(object):
         callback.cancel_with_error(e)
 
     def _on_jabber_rpc_error(self, iq):
+        iq.enable('rpc_query')
+        pmethod = iq['rpc_query']['method_call']['method_name']
         pid = iq['id']
-        pmethod = self._client.plugin['xep_0009']._extract_method(iq['rpc_query'])
         code = iq['error']['code']
         type = iq['error']['type']
         condition = iq['error']['condition']
-        #! print("['REMOTE.PY']._BINDING_handle_remote_procedure_error -> ERROR! ERROR! ERROR! Condition is '%s'" % condition)
         with self._lock:
             callback = self._callbacks[pid]
             del self._callbacks[pid]
-        e = {
-            'item-not-found': RemoteException("No remote handler available for %s at %s!" % (pmethod, iq['from'])),
-            'forbidden': AuthorizationException("Forbidden to invoke remote handler for %s at %s!" % (pmethod, iq['from'])),
-            'undefined-condition': RemoteException("An unexpected problem occured trying to invoke %s at %s!" % (pmethod, iq['from'])),
-        }[condition]
-        if e is None:
-            RemoteException("An unexpected exception occurred at %s!" % iq['from'])
+        
+        if condition == 'item-not-found':
+            e = InvocationException("No remote handler available for %s at %s!" % (pmethod, iq['from'])),
+        elif condition == 'forbidden':
+            e = AuthorizationException("Forbidden to invoke remote handler for %s at %s!" % (pmethod, iq['from'])),
+        elif condition == 'service-unavailable':
+            e = UnavailableException("No remote entity %s available to handle %s!" % (iq['from'], pmethod)),
+        else:
+            e = RemoteException("An unexpected problem occurred trying to invoke %s at %s!" % (pmethod, iq['from']))
+        
         callback.cancel_with_error(e)
-
 
 class Remote(object):
     '''
-    Bootstrap class for Jabber-RPC sessions. New sessions are openend
+    Bootstrap class for Jabber-RPC sessions. New sessions are opened
     with an existing XMPP client, or one is instantiated on demand.
     '''
+
     _instance = None
     _sessions = dict()
     _lock = threading.RLock()
 
     @classmethod
-    def new_session_with_client(cls, client, callback=None):
+    def new_session_with_client(cls, client, client_owned = False):
         '''
         Opens a new session with a given client.
 
         Arguments:
             client -- An XMPP client.
-            callback -- An optional callback which can be used to track
-                the starting state of the session.
+            client_owned -- Are we (Remote class) responsible for the client
         '''
+       
         with Remote._lock:
             if(client.boundjid.bare in cls._sessions):
                 raise RemoteException("There already is a session associated with these credentials!")
             else:
+                # FIXME: do we need to do this at the end when the connection is up ?
+                # seems the XMPP server can change the boundjid during connection setup ?!
                 cls._sessions[client.boundjid.bare] = client;
+        
         def _session_close_callback():
             with Remote._lock:
-                del cls._sessions[client.boundjid.bare]
-        result = RemoteSession(client, _session_close_callback)
-        client.plugin['xep_0009'].xmpp.add_event_handler('jabber_rpc_method_call', result._on_jabber_rpc_method_call)
-        client.plugin['xep_0009'].xmpp.add_event_handler('jabber_rpc_method_response', result._on_jabber_rpc_method_response)
-        client.plugin['xep_0009'].xmpp.add_event_handler('jabber_rpc_method_fault', result._on_jabber_rpc_method_fault)
-        client.plugin['xep_0009'].xmpp.add_event_handler('jabber_rpc_error', result._on_jabber_rpc_error)
-        if callback is None:
-            start_event_handler = result._notify
-        else:
-            start_event_handler = callback
-        client.add_event_handler("session_start", start_event_handler)
-        if client.connect():
-            client.process(threaded=True)
-        else:
-            raise RemoteException("Could not connect to XMPP server!")
-        pass
-        if callback is None:
-            result._wait()
-        return result
+                # FIXME: this can fail !
+                if client_owned:
+                    client.disconnect(False)
+                try:
+                    del cls._sessions[client.boundjid.bare]
+                except:
+                    pass
+                
+        session = RemoteSession(client, _session_close_callback)
+
+        # we need xep_0009        
+        if not client['xep_0009']:
+            client.registerPlugin('xep_0009')
+
+        client.plugin['xep_0009'].xmpp.add_event_handler('jabber_rpc_method_call', session._on_jabber_rpc_method_call)
+        client.plugin['xep_0009'].xmpp.add_event_handler('jabber_rpc_method_response', session._on_jabber_rpc_method_response)
+        client.plugin['xep_0009'].xmpp.add_event_handler('jabber_rpc_method_fault', session._on_jabber_rpc_method_fault)
+        client.plugin['xep_0009'].xmpp.add_event_handler('jabber_rpc_error', session._on_jabber_rpc_error)
+        
+        client.add_event_handler("session_start", session._notify)
+        
+        return session
 
     @classmethod
     def new_session(cls, jid, password, callback=None):
@@ -728,12 +745,29 @@ class Remote(object):
             callback -- An optional callback which can be used to track
                 the starting state of the session.
         '''
+
         client = sleekxmpp.ClientXMPP(jid, password)
+        
         #? Register plug-ins.
         client.registerPlugin('xep_0004') # Data Forms
         client.registerPlugin('xep_0009') # Jabber-RPC
         client.registerPlugin('xep_0030') # Service Discovery
         client.registerPlugin('xep_0060') # PubSub
         client.registerPlugin('xep_0199') # XMPP Ping
-        return cls.new_session_with_client(client, callback)
+        
+        session = cls.new_session_with_client(client, True)
+
+        if callback:
+            client.add_event_handler("session_start", callback)
+
+        if client.connect():
+            client.process(threaded=True)
+        else:
+            raise RemoteException("Could not connect to XMPP server!")
+        
+        if callback is None:
+            session._wait()
+
+        return session
+
 
