@@ -120,7 +120,7 @@ def _xml2py(value):
         return float(value.find('{%s}double' % namespace).text)
 
     if value.find('{%s}Base64' % namespace) is not None:
-        return rpcbase64(value.find('{%s}Base64' % namespace).text)
+        return rpcbase64(value.find('{%s}Base64' % namespace).text, True)
 
     if value.find('{%s}dateTime.iso8601') is not None:
         return rpctime(value.find('{%s}dateTime.iso8601'))
@@ -143,9 +143,11 @@ def _xml2py(value):
 
 class rpcbase64(object):
 
-    def __init__(self, data):
-        #base 64 encoded string
-        self.data = data
+    def __init__(self, data, raw = False):
+        if raw:
+            self.data = data
+        else:
+            self.data = base64.b64encode(data)
 
     def decode(self):
         return base64.b64decode(self.data)
