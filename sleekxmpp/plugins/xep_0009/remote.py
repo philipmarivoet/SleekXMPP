@@ -725,15 +725,15 @@ class Remote(object):
         if not client['xep_0009']:
             client.registerPlugin('xep_0009')
 
-        client.plugin['xep_0009'].xmpp.add_event_handler('jabber_rpc_method_call', session._on_jabber_rpc_method_call)
-        client.plugin['xep_0009'].xmpp.add_event_handler('jabber_rpc_method_response', session._on_jabber_rpc_method_response)
-        client.plugin['xep_0009'].xmpp.add_event_handler('jabber_rpc_method_fault', session._on_jabber_rpc_method_fault)
-        client.plugin['xep_0009'].xmpp.add_event_handler('jabber_rpc_error', session._on_jabber_rpc_error)
+        client.plugin['xep_0009'].xmpp.add_event_handler('jabber_rpc_method_call', session._on_jabber_rpc_method_call, threaded=True)
+        client.plugin['xep_0009'].xmpp.add_event_handler('jabber_rpc_method_response', session._on_jabber_rpc_method_response, threaded=True)
+        client.plugin['xep_0009'].xmpp.add_event_handler('jabber_rpc_method_fault', session._on_jabber_rpc_method_fault, threaded=True)
+        client.plugin['xep_0009'].xmpp.add_event_handler('jabber_rpc_error', session._on_jabber_rpc_error, threaded=True)
         
         client.add_event_handler("session_start", session._notify)
         
         return session
-
+        
     @classmethod
     def new_session(cls, jid, password, callback=None):
         '''

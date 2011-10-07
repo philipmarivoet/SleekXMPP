@@ -63,7 +63,7 @@ def _py2xml(*args):
             double.text = str(x)
             val.append(double)
         elif type(x) is rpcbase64:
-            b64 = ET.Element("Base64")
+            b64 = ET.Element("base64")
             b64.text = x.encoded()
             val.append(b64)
         elif type(x) is rpctime:
@@ -118,10 +118,11 @@ def _xml2py(value):
 
     if value.find('{%s}double' % namespace) is not None:
         return float(value.find('{%s}double' % namespace).text)
-
-    if value.find('{%s}Base64' % namespace) is not None:
-        return rpcbase64(value.find('{%s}Base64' % namespace).text, True)
-
+    if value.find('{%s}base64') is not None:
+        return rpcbase64(value.find('base64' % namespace).text)
+    if value.find('{%s}Base64') is not None:
+        # Older versions of XEP-0009 used Base64
+        return rpcbase64(value.find('Base64' % namespace).text)
     if value.find('{%s}dateTime.iso8601') is not None:
         return rpctime(value.find('{%s}dateTime.iso8601'))
 
