@@ -74,11 +74,14 @@ class ClientXMPP(BaseXMPP):
         BaseXMPP.__init__(self, jid, 'jabber:client')
 
         self.set_jid(jid)
-        self.password = password
         self.escape_quotes = escape_quotes
         self.plugin_config = plugin_config
         self.plugin_whitelist = plugin_whitelist
         self.default_port = 5222
+
+        self.credentials = {}
+
+        self.password = password
 
         self.stream_header = "<stream:stream to='%s' %s %s version='1.0'>" % (
                 self.boundjid.host,
@@ -97,6 +100,7 @@ class ClientXMPP(BaseXMPP):
         self.bindfail = False
 
         self.add_event_handler('connected', self._handle_connected)
+        self.add_event_handler('session_bind', self._handle_session_bind)
 
         self.register_stanza(StreamFeatures)
 
@@ -117,6 +121,14 @@ class ClientXMPP(BaseXMPP):
         self.register_plugin('feature_session')
         self.register_plugin('feature_mechanisms',
                 pconfig={'use_mech': sasl_mech} if sasl_mech else None)
+
+    @property
+    def password(self):
+        return self.credentials.get('password', '')
+
+    @password.setter
+    def password(self, value):
+        self.credentials['password'] = value
 
     def connect(self, address=tuple(), reattempt=True,
                 use_tls=True, use_ssl=False):
@@ -236,10 +248,15 @@ class ClientXMPP(BaseXMPP):
         iq = self.Iq()
         iq['type'] = 'get'
         iq.enable('roster')
+
+        if not block and callback is None:
+            callback = lambda resp: self._handle_roster(resp, request=True)
+
         response = iq.send(block, timeout, callback)
 
-        if callback is None:
-            return self._handle_roster(response, request=True)
+        if block: 
+            self._handle_roster(response, request=True)
+            return response
 
     def _handle_connected(self, event=None):
         #TODO: Use stream state here
@@ -286,7 +303,14 @@ class ClientXMPP(BaseXMPP):
             iq.reply()
             iq.enable('roster')
             iq.send()
-        return True
+
+    def _handle_session_bind(self, jid):
+        """Set the client roster to the JID set by the server.
+
+        :param :class:`sleekxmpp.xmlstream.jid.JID` jid: The bound JID as
+            dictated by the server. The same as :attr:`boundjid`.
+        """
+        self.client_roster = self.roster[jid]
 
 
 # To comply with PEP8, method names now use underscores.

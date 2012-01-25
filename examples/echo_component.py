@@ -11,7 +11,7 @@
 
 import sys
 import logging
-import time
+import getpass
 from optparse import OptionParser
 
 import sleekxmpp
@@ -116,7 +116,7 @@ if __name__ == '__main__':
 
     # Connect to the XMPP server and start processing XMPP stanzas.
     if xmpp.connect():
-        xmpp.process(threaded=False)
+        xmpp.process(block=True)
         print("Done")
     else:
         print("Unable to connect.")

@@ -35,7 +35,7 @@ except ImportError:
 import sleekxmpp
 from sleekxmpp.thirdparty.statemachine import StateMachine
 from sleekxmpp.xmlstream import Scheduler, tostring
-from sleekxmpp.xmlstream.stanzabase import StanzaBase, ET
+from sleekxmpp.xmlstream.stanzabase import StanzaBase, ET, ElementBase
 from sleekxmpp.xmlstream.handler import Waiter, XMLCallback
 from sleekxmpp.xmlstream.matcher import MatchXMLMask
 
@@ -268,6 +268,7 @@ class XMLStream(object):
         self.__handlers = []
         self.__event_handlers = {}
         self.__event_handlers_lock = threading.Lock()
+        self.__filters = {'in': [], 'out': []}
 
         self._id = 0
         self._id_lock = threading.Lock()
@@ -275,6 +276,13 @@ class XMLStream(object):
         #: The :attr:`auto_reconnnect` setting controls whether or not
         #: the stream will be restarted in the event of an error.
         self.auto_reconnect = True
+
+        #: The :attr:`disconnect_wait` setting is the default value
+        #: for controlling if the system waits for the send queue to
+        #: empty before ending the stream. This may be overridden by
+        #: passing ``wait=True`` or ``wait=False`` to :meth:`disconnect`.
+        #: The default :attr:`disconnect_wait` value is ``False``.
+        self.disconnect_wait = False
 
         #: A list of DNS results that have not yet been tried.
         self.dns_answers = []
@@ -402,6 +410,7 @@ class XMLStream(object):
             try:
                 while elapsed < delay and not self.stop.is_set():
                     time.sleep(0.1)
+                    elapsed += 0.1
             except KeyboardInterrupt:
                 self.stop.set()
                 return False
@@ -519,7 +528,7 @@ class XMLStream(object):
                 self.session_timeout,
                 _handle_session_timeout)
 
-    def disconnect(self, reconnect=False, wait=False):
+    def disconnect(self, reconnect=False, wait=None):
         """Terminate processing and close the XML streams.
 
         Optionally, the connection may be reconnected and
@@ -538,14 +547,20 @@ class XMLStream(object):
                           and processing should be restarted.
                           Defaults to ``False``.
         :param wait: Flag indicating if the send queue should
-                     be emptied before disconnecting.
+                     be emptied before disconnecting, overriding
+                     :attr:`disconnect_wait`.
         """
         self.state.transition('connected', 'disconnected',
                               func=self._disconnect, args=(reconnect, wait))
 
-    def _disconnect(self, reconnect=False, wait=False):
+    def _disconnect(self, reconnect=False, wait=None):
+        self.event('session_end', direct=True)
+
         # Wait for the send queue to empty.
-        if wait:
+        if wait is not None:
+            if wait:
+                self.send_queue.join()
+        elif self.disconnect_wait:
             self.send_queue.join()
 
         # Send the end of stream marker.
@@ -566,7 +581,6 @@ class XMLStream(object):
             self.event('socket_error', serr)
         finally:
             #clear your application state
-            self.event('session_end', direct=True)
             self.event("disconnected", direct=True)
             return True
 
@@ -729,6 +743,28 @@ class XMLStream(object):
         matchers.
         """
         del self.__root_stanza[stanza_class]
+
+    def add_filter(self, mode, handler, order=None):
+        """Add a filter for incoming or outgoing stanzas.
+
+        These filters are applied before incoming stanzas are
+        passed to any handlers, and before outgoing stanzas
+        are put in the send queue.
+
+        Each filter must accept a single stanza, and return
+        either a stanza or ``None``. If the filter returns
+        ``None``, then the stanza will be dropped from being
+        processed for events or from being sent.
+
+        :param mode: One of ``'in'`` or ``'out'``.
+        :param handler: The filter function.
+        :param int order: The position to insert the filter in
+                          the list of active filters.
+        """
+        if order:
+            self.__filters[mode].insert(order, handler)
+        else:
+            self.__filters[mode].append(handler)
 
     def add_handler(self, mask, pointer, name=None, disposable=False,
                     threaded=False, filter=False, instream=False):
@@ -981,6 +1017,14 @@ class XMLStream(object):
             timeout = self.response_timeout
         if hasattr(mask, 'xml'):
             mask = mask.xml
+
+        if isinstance(data, ElementBase):
+            for filter in self.__filters['out']:
+                if data is not None:
+                    data = filter(data)
+            if data is None:
+                return
+
         data = str(data)
         if mask is not None:
             log.warning("Use of send mask waiters is deprecated.")
@@ -1119,6 +1163,7 @@ class XMLStream(object):
         # Additional passes will be made only if an error occurs and
         # reconnecting is permitted.
         while True:
+            shutdown = False
             try:
                 # The call to self.__read_xml will block and prevent
                 # the body of the loop from running until a disconnect
@@ -1136,16 +1181,17 @@ class XMLStream(object):
                     if not self.__read_xml():
                         # If the server terminated the stream, end processing
                         break
-            except SyntaxError as e:
-                log.error("Error reading from XML stream.")
-                self.exception(e)
             except KeyboardInterrupt:
                 log.debug("Keyboard Escape Detected in _process")
-                self.stop.set()
+                self.event('killed', direct=True)
+                shutdown = True
             except SystemExit:
                 log.debug("SystemExit in _process")
-                self.stop.set()
-                self.scheduler.quit()
+                shutdown = True
+            except SyntaxError as e:
+                log.error("Error reading from XML stream.")
+                shutdown = True
+                self.exception(e)
             except Socket.error as serr:
                 self.event('socket_error', serr)
                 log.exception('Socket Error')
@@ -1154,7 +1200,8 @@ class XMLStream(object):
                     log.exception('Connection error.')
                 self.exception(e)
 
-            if not self.stop.is_set() and self.auto_reconnect:
+            if not shutdown and not self.stop.is_set() \
+               and self.auto_reconnect:
                 self.reconnect()
             else:
                 self.disconnect()
@@ -1230,14 +1277,20 @@ class XMLStream(object):
         :param xml: The :class:`~sleekxmpp.xmlstream.stanzabase.ElementBase`
                     stanza to analyze.
         """
-        log.debug("RECV: %s", tostring(xml, xmlns=self.default_ns,
-                                            stream=self))
         # Apply any preprocessing filters.
         xml = self.incoming_filter(xml)
 
         # Convert the raw XML object into a stanza object. If no registered
         # stanza type applies, a generic StanzaBase stanza will be used.
         stanza = self._build_stanza(xml)
+
+        for filter in self.__filters['in']:
+            if stanza is not None:
+                stanza = filter(stanza)
+        if stanza is None:
+            return
+
+        log.debug("RECV: %s", stanza)
 
         # Match the stanza against registered handlers. Handlers marked
         # to run "in stream" will be executed immediately; the rest will

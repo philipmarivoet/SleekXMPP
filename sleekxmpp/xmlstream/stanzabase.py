@@ -77,6 +77,49 @@ def register_stanza_plugin(stanza, plugin, iterable=False, overrides=False):
 registerStanzaPlugin = register_stanza_plugin
 
 
+def fix_ns(xpath, split=False, propagate_ns=True, default_ns=''):
+    """Apply the stanza's namespace to elements in an XPath expression.
+
+    :param string xpath: The XPath expression to fix with namespaces.
+    :param bool split: Indicates if the fixed XPath should be left as a
+                       list of element names with namespaces. Defaults to
+                       False, which returns a flat string path.
+    :param bool propagate_ns: Overrides propagating parent element
+                              namespaces to child elements. Useful if
+                              you wish to simply split an XPath that has
+                              non-specified namespaces, and child and
+                              parent namespaces are known not to always
+                              match. Defaults to True.
+    """
+    fixed = []
+    # Split the XPath into a series of blocks, where a block
+    # is started by an element with a namespace.
+    ns_blocks = xpath.split('{')
+    for ns_block in ns_blocks:
+        if '}' in ns_block:
+            # Apply the found namespace to following elements
+            # that do not have namespaces.
+            namespace = ns_block.split('}')[0]
+            elements = ns_block.split('}')[1].split('/')
+        else:
+            # Apply the stanza's namespace to the following
+            # elements since no namespace was provided.
+            namespace = default_ns
+            elements = ns_block.split('/')
+
+        for element in elements:
+            if element:
+                # Skip empty entry artifacts from splitting.
+                if propagate_ns:
+                    tag = '{%s}%s' % (namespace, element)
+                else:
+                    tag = element
+                fixed.append(tag)
+    if split:
+        return fixed
+    return '/'.join(fixed)
+
+
 class ElementBase(object):
 
     """
@@ -167,7 +210,7 @@ class ElementBase(object):
     #: For :class:`ElementBase` subclasses which are intended to be used
     #: as plugins, the ``plugin_attrib`` value defines the plugin name.
     #: Plugins may be accessed by using the ``plugin_attrib`` value as
-    #: the interface. An example using ``plugin_attrib = 'foo'``:
+    #: the interface. An example using ``plugin_attrib = 'foo'``::
     #:
     #:     register_stanza_plugin(Message, FooPlugin)
     #:     msg = Message()
@@ -290,12 +333,11 @@ class ElementBase(object):
         # Initialize values using provided XML
         for child in self.xml.getchildren():
             if child.tag in self.plugin_tag_map:
-                plugin = self.plugin_tag_map[child.tag]
-                self.plugins[plugin.plugin_attrib] = plugin(child, self)
-            for sub in self.plugin_iterables:
-                if child.tag == "{%s}%s" % (sub.namespace, sub.name):
-                    self.iterables.append(sub(child, self))
-                    break
+                plugin_class = self.plugin_tag_map[child.tag]
+                plugin = plugin_class(child, self)
+                self.plugins[plugin.plugin_attrib] = plugin
+                if plugin_class in self.plugin_iterables:
+                    self.iterables.append(plugin)
 
     def setup(self, xml=None):
         """Initialize the stanza's XML contents.
@@ -346,7 +388,11 @@ class ElementBase(object):
         """
         if attrib not in self.plugins:
             plugin_class = self.plugin_attrib_map[attrib]
-            self.plugins[attrib] = plugin_class(parent=self)
+            existing_xml = self.xml.find(plugin_class.tag_name())
+            plugin = plugin_class(parent=self, xml=existing_xml)
+            self.plugins[attrib] = plugin
+            if plugin_class in self.plugin_iterables:
+                self.iterables.append(plugin)
         return self
 
     def _get_stanza_values(self):
@@ -757,7 +803,7 @@ class ElementBase(object):
                              may be either a string or a list of element
                              names with attribute checks.
         """
-        if isinstance(xpath, str):
+        if not isinstance(xpath, list):
             xpath = self._fix_ns(xpath, split=True, propagate_ns=False)
 
         # Extract the tag name and attribute checks for the first XPath node.
@@ -949,46 +995,9 @@ class ElementBase(object):
         return self
 
     def _fix_ns(self, xpath, split=False, propagate_ns=True):
-        """Apply the stanza's namespace to elements in an XPath expression.
-
-        :param string xpath: The XPath expression to fix with namespaces.
-        :param bool split: Indicates if the fixed XPath should be left as a
-                           list of element names with namespaces. Defaults to
-                           False, which returns a flat string path.
-        :param bool propagate_ns: Overrides propagating parent element
-                                  namespaces to child elements. Useful if
-                                  you wish to simply split an XPath that has
-                                  non-specified namespaces, and child and
-                                  parent namespaces are known not to always
-                                  match. Defaults to True.
-        """
-        fixed = []
-        # Split the XPath into a series of blocks, where a block
-        # is started by an element with a namespace.
-        ns_blocks = xpath.split('{')
-        for ns_block in ns_blocks:
-            if '}' in ns_block:
-                # Apply the found namespace to following elements
-                # that do not have namespaces.
-                namespace = ns_block.split('}')[0]
-                elements = ns_block.split('}')[1].split('/')
-            else:
-                # Apply the stanza's namespace to the following
-                # elements since no namespace was provided.
-                namespace = self.namespace
-                elements = ns_block.split('/')
-
-            for element in elements:
-                if element:
-                    # Skip empty entry artifacts from splitting.
-                    if propagate_ns:
-                        tag = '{%s}%s' % (namespace, element)
-                    else:
-                        tag = element
-                    fixed.append(tag)
-        if split:
-            return fixed
-        return '/'.join(fixed)
+        return fix_ns(xpath, split=split, 
+                             propagate_ns=propagate_ns, 
+                             default_ns=self.namespace)
 
     def __eq__(self, other):
         """Compare the stanza object with another to test for equality.
@@ -1249,7 +1258,7 @@ class StanzaBase(ElementBase):
                          stanza sent immediately. Useful for stream
                          initialization. Defaults to ``False``.
         """
-        self.stream.send_raw(self.__str__(), now=now)
+        self.stream.send(self, now=now)
 
     def __copy__(self):
         """Return a copy of the stanza object that does not share the

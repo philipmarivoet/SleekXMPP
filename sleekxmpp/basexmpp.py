@@ -227,14 +227,14 @@ class BaseXMPP(XMLStream):
             self.plugin[plugin] = getattr(module, plugin)(self, pconfig)
 
             # Let XEP/RFC implementing plugins have some extra logging info.
-            spec = '(CUSTOM) '
+            spec = '(CUSTOM) %s'
             if self.plugin[plugin].xep:
                 spec = "(XEP-%s) " % self.plugin[plugin].xep
             elif self.plugin[plugin].rfc:
                 spec = "(RFC-%s) " % self.plugin[plugin].rfc
 
             desc = (spec, self.plugin[plugin].description)
-            log.debug("Loaded Plugin %s", desc)
+            log.debug("Loaded Plugin %s %s" % desc)
         except:
             log.exception("Unable to load plugin: %s", plugin)
 
@@ -763,6 +763,11 @@ class BaseXMPP(XMLStream):
             iq = exception.iq
             log.error('Request timed out: %s', iq)
             log.warning('You should catch IqTimeout exceptions')
+        elif isinstance(exception, SyntaxError):
+            # Hide stream parsing errors that occur when the
+            # stream is disconnected (they've been handled, we
+            # don't need to make a mess in the logs).
+            pass
         else:
             log.exception(exception)
 

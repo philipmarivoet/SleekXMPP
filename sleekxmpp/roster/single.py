@@ -144,6 +144,9 @@ class RosterNode(object):
         """
         if isinstance(jid, JID):
             key = jid.bare
+        else:
+            key = jid
+
         state = {'name': name,
                  'groups': groups or [],
                  'from': afrom,
@@ -152,11 +155,11 @@ class RosterNode(object):
                  'pending_out': pending_out,
                  'whitelisted': whitelisted,
                  'subscription': 'none'}
-        self._jids[jid] = RosterItem(self.xmpp, jid, self.jid,
+        self._jids[key] = RosterItem(self.xmpp, jid, self.jid,
                                      state=state, db=self.db,
                                      roster=self)
         if save:
-            self._jids[jid].save()
+            self._jids[key].save()
 
     def subscribe(self, jid):
         """
@@ -285,3 +288,17 @@ class RosterNode(object):
             if not self.xmpp.sentpresence:
                 self.xmpp.event('sent_presence')
                 self.xmpp.sentpresence = True
+
+    def send_last_presence(self):
+        if self.last_status is None:
+            self.send_presence()
+        else:
+            pres = self.last_status
+            if self.xmpp.is_component:
+                pres['from'] = self.jid
+            else:
+                del pres['from']
+            pres.send()
+
+    def __repr__(self):
+        return repr(self._jids)

@@ -8,6 +8,7 @@
 # file, which you should have received as part of this distribution.
 
 import sys
+import codecs
 try:
     from setuptools import setup, Command
 except ImportError:
@@ -41,7 +42,7 @@ from sleekxmpp.version import __version__
 
 VERSION          = __version__
 DESCRIPTION      = 'SleekXMPP is an elegant Python library for XMPP (aka Jabber, Google Talk, etc).'
-with open('README.rst') as readme:
+with codecs.open('README.rst', 'r', encoding='UTF-8') as readme:
     LONG_DESCRIPTION = ''.join(readme)
 
 CLASSIFIERS      = [ 'Intended Audience :: Developers',
@@ -73,10 +74,12 @@ packages     = [ 'sleekxmpp',
                  'sleekxmpp/plugins/xep_0060',
                  'sleekxmpp/plugins/xep_0060/stanza',
                  'sleekxmpp/plugins/xep_0066',
+                 'sleekxmpp/plugins/xep_0077',
                  'sleekxmpp/plugins/xep_0078',
                  'sleekxmpp/plugins/xep_0085',
                  'sleekxmpp/plugins/xep_0086',
                  'sleekxmpp/plugins/xep_0092',
+                 'sleekxmpp/plugins/xep_0115',
                  'sleekxmpp/plugins/xep_0128',
                  'sleekxmpp/plugins/xep_0199',
                  'sleekxmpp/plugins/xep_0202',

@@ -11,7 +11,7 @@
 
 import sys
 import logging
-import time
+import getpass
 from optparse import OptionParser
 
 import sleekxmpp
@@ -44,7 +44,7 @@ class MUCBot(sleekxmpp.ClientXMPP):
         # The session_start event will be triggered when
         # the bot establishes its connection with the server
         # and the XML streams are ready for use. We want to
-        # listen for this event so that we we can intialize
+        # listen for this event so that we we can initialize
         # our roster.
         self.add_event_handler("session_start", self.start)
 
@@ -68,7 +68,7 @@ class MUCBot(sleekxmpp.ClientXMPP):
         Process the session_start event.
 
         Typical actions for the session_start event are
-        requesting the roster and broadcasting an intial
+        requesting the roster and broadcasting an initial
         presence stanza.
 
         Arguments:
@@ -76,8 +76,8 @@ class MUCBot(sleekxmpp.ClientXMPP):
                      event does not provide any additional
                      data.
         """
-        self.getRoster()
-        self.sendPresence()
+        self.get_roster()
+        self.send_presence()
         self.plugin['xep_0045'].joinMUC(self.room,
                                         self.nick,
                                         # If a room password is needed, use:
@@ -161,9 +161,14 @@ if __name__ == '__main__':
     logging.basicConfig(level=opts.loglevel,
                         format='%(levelname)-8s %(message)s')
 
-    if None in [opts.jid, opts.password, opts.room, opts.nick]:
-        optp.print_help()
-        sys.exit(1)
+    if opts.jid is None:
+        opts.jid = raw_input("Username: ")
+    if opts.password is None:
+        opts.password = getpass.getpass("Password: ")
+    if opts.room is None:
+        opts.room = raw_input("MUC room: ")
+    if opts.nick is None:
+        opts.nick = raw_input("MUC nickname: ")
 
     # Setup the MUCBot and register plugins. Note that while plugins may
     # have interdependencies, the order in which you register them does
@@ -175,14 +180,14 @@ if __name__ == '__main__':
 
     # Connect to the XMPP server and start processing XMPP stanzas.
     if xmpp.connect():
-        # If you do not have the pydns library installed, you will need
+        # If you do not have the dnspython library installed, you will need
         # to manually specify the name of the server if it does not match
         # the one in the JID. For example, to use Google Talk you would
         # need to use:
         #
         # if xmpp.connect(('talk.google.com', 5222)):
         #     ...
-        xmpp.process(threaded=False)
+        xmpp.process(block=True)
         print("Done")
     else:
         print("Unable to connect.")
