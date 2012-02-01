@@ -120,11 +120,11 @@ def _xml2py(value):
         return float(value.find('{%s}double' % namespace).text)
 
     if value.find('{%s}base64' % namespace) is not None:
-        return rpcbase64(value.find('{%s}base64' % namespace).text.encode())
+        return rpcbase64(value.find('{%s}base64' % namespace).text, True)
 
     if value.find('{%s}Base64' % namespace) is not None:
         # Older versions of XEP-0009 used Base64
-        return rpcbase64(value.find('{%s}Base64' % namespace).text.encode())
+        return rpcbase64(value.find('{%s}Base64' % namespace).text, True)
 
     if value.find('{%s}dateTime.iso8601' % namespace) is not None:
         return rpctime(value.find('{%s}dateTime.iso8601' % namespace).text)
@@ -156,10 +156,10 @@ class rpcbase64(object):
         return base64.b64decode(self.data)
 
     def __str__(self):
-        return self.decode().decode()
+        return self.decode()
 
     def encoded(self):
-        return self.data.decode()
+        return self.data
 
 
 class rpctime(object):
