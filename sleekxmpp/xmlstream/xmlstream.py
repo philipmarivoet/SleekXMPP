@@ -432,6 +432,7 @@ class XMLStream(object):
                 cert_policy = ssl.CERT_REQUIRED
 
             ssl_socket = ssl.wrap_socket(self.socket,
+                                         ssl_version=self.ssl_version,
                                          ca_certs=self.ca_certs,
                                          cert_reqs=cert_policy)
 
