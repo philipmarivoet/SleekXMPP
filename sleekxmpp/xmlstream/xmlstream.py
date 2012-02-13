@@ -397,7 +397,26 @@ class XMLStream(object):
         if self.default_domain:
             self.address = self.pick_dns_answer(self.default_domain,
                                                 self.address[1])
-        self.socket = self.socket_class(Socket.AF_INET, Socket.SOCK_STREAM)
+        
+        try:
+            # Look for IPv6 addresses, in addition to IPv4
+            for res in Socket.getaddrinfo(self.address[0],
+                                          int(self.address[1]),
+                                          0,
+                                          Socket.SOCK_STREAM):
+                log.debug("Trying: %s", res[-1])
+                af, sock_type, proto, canonical, sock_addr = res
+                try:
+                    self.socket = self.socket_class(af, sock_type, proto)
+                    break
+                except Socket.error:
+                    log.debug("Could not open IPv%s socket." % proto)
+        except Socket.gaierror:
+            log.warning("Socket could not be opened: no connectivity" + \
+                        " or wrong IP versions.")
+            self.stop.set()
+            return False
+
         self.configure_socket()
 
         if self.reconnect_delay is None:
@@ -443,6 +462,9 @@ class XMLStream(object):
             else:
                 self.socket = ssl_socket
 
+            cert = self.socket.getpeercert()
+            log.debug('CERT: %s', cert)
+            self.event('ssl_cert', cert, direct=True)
         try:
             if not self.use_proxy:
                 log.debug("Connecting to %s:%s", *self.address)
@@ -676,6 +698,11 @@ class XMLStream(object):
             else:
                 self.socket = ssl_socket
             self.socket.do_handshake()
+
+            cert = self.socket.getpeercert()
+            log.debug('CERT: %s', cert)
+            self.event('ssl_cert', cert, direct=True)
+
             self.set_socket(self.socket)
             return True
         else:
@@ -832,20 +859,44 @@ class XMLStream(object):
             resolver = dns.resolver.get_default_resolver()
             self.configure_dns(resolver, domain=domain, port=port)
 
+            v4_answers = []
+            v6_answers = []
+            answers = []
+
             try:
-                answers = resolver.query(domain, dns.rdatatype.A)
+                log.debug("Querying A records for %s" % domain)
+                v4_answers = resolver.query(domain, dns.rdatatype.A)
             except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
                 log.warning("No A records for %s", domain)
-                return [((domain, port), 0, 0)]
+                v4_answers = [((domain, port), 0, 0)]
             except dns.exception.Timeout:
                 log.warning("DNS resolution timed out " + \
                             "for A record of %s", domain)
-                return [((domain, port), 0, 0)]
+                v4_answers = [((domain, port), 0, 0)]
             else:
-                return [((ans.address, port), 0, 0) for ans in answers]
+                for ans in v4_answers:
+                    log.debug("Found A record: %s", ans.address)
+                    answers.append(((ans.address, port), 0, 0))
+
+            try:
+                log.debug("Querying AAAA records for %s" % domain)
+                v6_answers = resolver.query(domain, dns.rdatatype.AAAA)
+            except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
+                log.warning("No AAAA records for %s", domain)
+                v6_answers = [((domain, port), 0, 0)]
+            except dns.exception.Timeout:
+                log.warning("DNS resolution timed out " + \
+                            "for AAAA record of %s", domain)
+                v6_answers = [((domain, port), 0, 0)]
+            else:
+                for ans in v6_answers:
+                    log.debug("Found AAAA record: %s", ans.address)
+                    answers.append(((ans.address, port), 0, 0))
+
+            return answers
         else:
             log.warning("dnspython is not installed -- " + \
-                        "relying on OS A record resolution")
+                        "relying on OS A/AAAA record resolution")
             self.configure_dns(None, domain=domain, port=port)
             return [((domain, port), 0, 0)]
 
@@ -874,6 +925,7 @@ class XMLStream(object):
         items = [x for x in addresses.keys()]
         items.sort()
 
+        address = (domain, port)
         picked = random.randint(0, intmax)
         for item in items:
             if picked <= item:
@@ -881,8 +933,8 @@ class XMLStream(object):
                 break
         for idx, answer in enumerate(self.dns_answers):
             if self.dns_answers[0] == address:
+                self.dns_answers.pop(idx)
                 break
-        self.dns_answers.pop(idx)
         log.debug("Trying to connect to %s:%s", *address)
         return address
 
@@ -1191,7 +1243,6 @@ class XMLStream(object):
                 shutdown = True
             except SyntaxError as e:
                 log.error("Error reading from XML stream.")
-                shutdown = True
                 self.exception(e)
             except Socket.error as serr:
                 self.event('socket_error', serr, direct=True)
@@ -1409,7 +1460,7 @@ class XMLStream(object):
         """Extract stanzas from the send queue and send them on the stream."""
         try:
             while not self.stop.is_set():
-                while not self.stop.is_set and \
+                while not self.stop.is_set() and \
                       not self.session_started_event.is_set():
                     self.session_started_event.wait(timeout=1)
                 if self.__failed_send_stanza is not None:
