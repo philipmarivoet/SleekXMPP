@@ -461,10 +461,6 @@ class XMLStream(object):
                 self.socket.socket = ssl_socket
             else:
                 self.socket = ssl_socket
-
-            cert = self.socket.getpeercert()
-            log.debug('CERT: %s', cert)
-            self.event('ssl_cert', cert, direct=True)
         try:
             if not self.use_proxy:
                 log.debug("Connecting to %s:%s", *self.address)
@@ -473,6 +469,11 @@ class XMLStream(object):
             self.set_socket(self.socket, ignore=True)
             #this event is where you should set your application state
             self.event("connected", direct=True)
+
+            cert = self.socket.getpeercert()
+            log.debug('CERT: %s', cert)
+            self.event('ssl_cert', cert, direct=True)
+
             self.reconnect_delay = 1.0
             return True
         except Socket.error as serr:
