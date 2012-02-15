@@ -470,9 +470,10 @@ class XMLStream(object):
             #this event is where you should set your application state
             self.event("connected", direct=True)
 
-            cert = self.socket.getpeercert()
-            log.debug('CERT: %s', cert)
-            self.event('ssl_cert', cert, direct=True)
+            if self.use_ssl and self.ssl_support:
+                cert = self.socket.getpeercert()
+                log.debug('CERT: %s', cert)
+                self.event('ssl_cert', cert, direct=True)
 
             self.reconnect_delay = 1.0
             return True
