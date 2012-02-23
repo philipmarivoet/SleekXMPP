@@ -24,13 +24,14 @@ import ssl
 import sys
 import threading
 import time
-import types
 import random
 import weakref
 try:
     import queue
 except ImportError:
     import Queue as queue
+
+from xml.parsers.expat import ExpatError
 
 import sleekxmpp
 from sleekxmpp.thirdparty.statemachine import StateMachine
@@ -461,10 +462,16 @@ class XMLStream(object):
                 self.socket.socket = ssl_socket
             else:
                 self.socket = ssl_socket
+
         try:
             if not self.use_proxy:
                 log.debug("Connecting to %s:%s", *self.address)
                 self.socket.connect(self.address)
+
+                if self.use_ssl and self.ssl_support:
+                    cert = self.socket.getpeercert()
+                    log.debug('CERT: %s', cert)
+                    self.event('ssl_cert', cert, direct=True)
 
             self.set_socket(self.socket, ignore=True)
             #this event is where you should set your application state
@@ -576,6 +583,7 @@ class XMLStream(object):
                      :attr:`disconnect_wait`.
         """
         self.state.transition('connected', 'disconnected',
+                              wait=2.0,
                               func=self._disconnect, args=(reconnect, wait))
 
     def _disconnect(self, reconnect=False, wait=None):
@@ -772,7 +780,7 @@ class XMLStream(object):
         stanza objects, but may still be processed using handlers and
         matchers.
         """
-        del self.__root_stanza[stanza_class]
+        self.__root_stanza.remove(stanza_class)
 
     def add_filter(self, mode, handler, order=None):
         """Add a filter for incoming or outgoing stanzas.
@@ -1243,7 +1251,7 @@ class XMLStream(object):
             except SystemExit:
                 log.debug("SystemExit in _process")
                 shutdown = True
-            except SyntaxError as e:
+            except (SyntaxError, ExpatError) as e:
                 log.error("Error reading from XML stream.")
                 self.exception(e)
             except Socket.error as serr:
@@ -1489,9 +1497,7 @@ class XMLStream(object):
                                 log.debug('SSL error - max retries reached')
                                 self.exception(serr)
                                 log.warning("Failed to send %s", data)
-                                if reconnect is None:
-                                    reconnect = self.auto_reconnect
-                                self.disconnect(reconnect)
+                                self.disconnect(self.auto_reconnect)
                             log.warning('SSL write error - reattempting')
                             time.sleep(self.ssl_retry_delay)
                             tries += 1

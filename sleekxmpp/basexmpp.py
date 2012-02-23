@@ -15,22 +15,21 @@
 from __future__ import with_statement, unicode_literals
 
 import sys
-import copy
 import logging
 
 import sleekxmpp
-from sleekxmpp import plugins, roster
+from sleekxmpp import plugins, features, roster
 from sleekxmpp.exceptions import IqError, IqTimeout
 
-from sleekxmpp.stanza import Message, Presence, Iq, Error, StreamError
+from sleekxmpp.stanza import Message, Presence, Iq, StreamError
 from sleekxmpp.stanza.roster import Roster
 from sleekxmpp.stanza.nick import Nick
 from sleekxmpp.stanza.htmlim import HTMLIM
 
-from sleekxmpp.xmlstream import XMLStream, JID, tostring
+from sleekxmpp.xmlstream import XMLStream, JID
 from sleekxmpp.xmlstream import ET, register_stanza_plugin
-from sleekxmpp.xmlstream.matcher import *
-from sleekxmpp.xmlstream.handler import *
+from sleekxmpp.xmlstream.matcher import MatchXPath
+from sleekxmpp.xmlstream.handler import Callback
 
 
 log = logging.getLogger(__name__)
@@ -205,12 +204,12 @@ class BaseXMPP(XMLStream):
             # Import the given module that contains the plugin.
             if not module:
                 try:
-                    module = sleekxmpp.plugins
+                    module = plugins
                     module = __import__(
                             str("%s.%s" % (module.__name__, plugin)),
                             globals(), locals(), [str(plugin)])
                 except ImportError:
-                    module = sleekxmpp.features
+                    module = features
                     module = __import__(
                             str("%s.%s" % (module.__name__, plugin)),
                             globals(), locals(), [str(plugin)])
