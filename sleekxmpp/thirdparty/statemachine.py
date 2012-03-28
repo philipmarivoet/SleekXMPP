@@ -93,7 +93,10 @@ class StateMachine(object):
             # detect timeout:
             remainder = start + wait - time.time()
             if remainder > 0:
+                # FIXME: philipm: added release() / acquire()
+                self.lock.release()
                 self.notifier.wait(remainder)
+                self.lock.acquire()
             else:
                 log.debug("State was not ready")
                 self.lock.release()
