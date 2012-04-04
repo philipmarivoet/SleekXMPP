@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
     sleekxmpp.xmlstream.xmlstream
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -39,18 +38,12 @@ from sleekxmpp.xmlstream import Scheduler, tostring
 from sleekxmpp.xmlstream.stanzabase import StanzaBase, ET, ElementBase
 from sleekxmpp.xmlstream.handler import Waiter, XMLCallback
 from sleekxmpp.xmlstream.matcher import MatchXMLMask
+from sleekxmpp.xmlstream.resolver import resolve, default_resolver
 
 # In Python 2.x, file socket objects are broken. A patched socket
 # wrapper is provided for this case in filesocket.py.
 if sys.version_info < (3, 0):
     from sleekxmpp.xmlstream.filesocket import FileSocket, Socket26
-
-try:
-    import dns.resolver
-except ImportError:
-    DNSPYTHON = False
-else:
-    DNSPYTHON = True
 
 
 #: The time in seconds to wait before timing out waiting for response stanzas.
@@ -80,6 +73,12 @@ SSL_RETRY_MAX = 10
 
 #: Maximum time to delay between connection attempts is one hour.
 RECONNECT_MAX_DELAY = 600
+
+#: Maximum number of attempts to connect to the server before quitting
+#: and raising a 'connect_failed' event. Setting this to ``None`` will
+#: allow infinite reconnection attempts, and using ``0`` will disable
+#: reconnections. Defaults to ``None``.
+RECONNECT_MAX_ATTEMPTS = None
 
 
 log = logging.getLogger(__name__)
@@ -156,6 +155,12 @@ class XMLStream(object):
             
         #: Maximum time to delay between connection attempts is one hour.
         self.reconnect_max_delay = RECONNECT_MAX_DELAY
+
+        #: Maximum number of attempts to connect to the server before 
+        #: quitting and raising a 'connect_failed' event. Setting to
+        #: ``None`` allows infinite reattempts, while setting it to ``0``
+        #: will disable reconnection attempts. Defaults to ``None``.
+        self.reconnect_max_attempts = RECONNECT_MAX_ATTEMPTS
 
         #: The time in seconds to delay between attempts to resend data
         #: after an SSL error.
@@ -250,11 +255,17 @@ class XMLStream(object):
         #: after connecting before reconnecting and trying again.
         self.session_timeout = 45
 
+        #: Flag for controlling if the session can be considered ended
+        #: if the connection is terminated.
+        self.end_session_on_disconnect = True
+
         #: A queue of stream, custom, and scheduled events to be processed.
         self.event_queue = queue.Queue()
 
         #: A queue of string data to be sent over the stream.
         self.send_queue = queue.Queue()
+        self.send_queue_lock = threading.Lock()
+        self.send_lock = threading.RLock()
 
         #: A :class:`~sleekxmpp.xmlstream.scheduler.Scheduler` instance for
         #: executing callbacks in the future based on time delays.
@@ -269,7 +280,7 @@ class XMLStream(object):
         self.__handlers = []
         self.__event_handlers = {}
         self.__event_handlers_lock = threading.Lock()
-        self.__filters = {'in': [], 'out': []}
+        self.__filters = {'in': [], 'out': [], 'out_sync': []}
 
         self._id = 0
         self._id_lock = threading.Lock()
@@ -288,9 +299,14 @@ class XMLStream(object):
         #: A list of DNS results that have not yet been tried.
         self.dns_answers = []
 
+        #: The service name to check with DNS SRV records. For
+        #: example, setting this to ``'xmpp-client'`` would query the
+        #: ``_xmpp-client._tcp`` service.
+        self.dns_service = None
+
         self.add_event_handler('connected', self._handle_connected)
         self.add_event_handler('session_start', self._start_keepalive)
-        self.add_event_handler('session_end', self._end_keepalive)
+        self.add_event_handler('disconnected', self._end_keepalive)
 
     def use_signals(self, signals=None):
         """Register signal handlers for ``SIGHUP`` and ``SIGTERM``.
@@ -357,8 +373,10 @@ class XMLStream(object):
                 use_tls=True, reattempt=True):
         """Create a new socket and connect to the server.
 
-        Setting ``reattempt`` to ``True`` will cause connection attempts to
-        be made every second until a successful connection is established.
+        Setting ``reattempt`` to ``True`` will cause connection
+        attempts to be made with an exponential backoff delay (max of
+        :attr:`reconnect_max_delay` which defaults to 10 minute) until a
+        successful connection is established.
 
         :param host: The name of the desired server for the connection.
         :param port: Port to connect to on the server.
@@ -383,44 +401,28 @@ class XMLStream(object):
         if use_tls is not None:
             self.use_tls = use_tls
 
+
         # Repeatedly attempt to connect until a successful connection
         # is established.
+        attempts = self.reconnect_max_attempts
         connected = self.state.transition('disconnected', 'connected',
-                                          func=self._connect)
+                                          func=self._connect, args=(reattempt,))
         while reattempt and not connected and not self.stop.is_set():
             connected = self.state.transition('disconnected', 'connected',
                                               func=self._connect)
+            if not connected:
+                if attempts is not None:
+                    attempts -= 1
+                    if attempts <= 0:
+                        self.event('connection_failed', direct=True)
+                        return False
         return connected
 
-    def _connect(self):
+    def _connect(self, reattempt=True):
         self.scheduler.remove('Session timeout check')
         self.stop.clear()
-        if self.default_domain:
-            self.address = self.pick_dns_answer(self.default_domain,
-                                                self.address[1])
-        
-        try:
-            # Look for IPv6 addresses, in addition to IPv4
-            for res in Socket.getaddrinfo(self.address[0],
-                                          int(self.address[1]),
-                                          0,
-                                          Socket.SOCK_STREAM):
-                log.debug("Trying: %s", res[-1])
-                af, sock_type, proto, canonical, sock_addr = res
-                try:
-                    self.socket = self.socket_class(af, sock_type, proto)
-                    break
-                except Socket.error:
-                    log.debug("Could not open IPv%s socket." % proto)
-        except Socket.gaierror:
-            log.warning("Socket could not be opened: no connectivity" + \
-                        " or wrong IP versions.")
-            self.stop.set()
-            return False
-
-        self.configure_socket()
-
-        if self.reconnect_delay is None:
+                
+        if self.reconnect_delay is None or not reattempt:
             delay = 1.0
         else:
             delay = min(self.reconnect_delay * 2, self.reconnect_max_delay)
@@ -438,10 +440,29 @@ class XMLStream(object):
                 self.stop.set()
                 return False
 
+        if self.default_domain:
+            try:
+                self.address = self.pick_dns_answer(self.default_domain,
+                                                    self.address[1])
+            except StopIteration:
+                log.debug("No remaining DNS records to try.")
+                self.dns_answers = None
+                if reattempt:
+                    self.reconnect_delay = delay
+                return False
+
+        af = Socket.AF_INET
+        if ':' in self.address[0]:
+            af = Socket.AF_INET6
+        self.socket = self.socket_class(af, Socket.SOCK_STREAM)
+
+        self.configure_socket()
+
         if self.use_proxy:
             connected = self._connect_proxy()
             if not connected:
-                self.reconnect_delay = delay
+                if reattempt: 
+                    self.reconnect_delay = delay
                 return False
 
         if self.use_ssl and self.ssl_support:
@@ -465,11 +486,15 @@ class XMLStream(object):
 
         try:
             if not self.use_proxy:
-                log.debug("Connecting to %s:%s", *self.address)
+                domain = self.address[0]
+                if ':' in domain:
+                    domain = '[%s]' % domain
+                log.debug("Connecting to %s:%s", domain, self.address[1])
                 self.socket.connect(self.address)
 
                 if self.use_ssl and self.ssl_support:
-                    cert = self.socket.getpeercert()
+                    cert = self.socket.getpeercert(binary_form=True)
+                    cert = ssl.DER_cert_to_PEM_cert(cert)
                     log.debug('CERT: %s', cert)
                     self.event('ssl_cert', cert, direct=True)
 
@@ -481,9 +506,11 @@ class XMLStream(object):
         except Socket.error as serr:
             error_msg = "Could not connect to %s:%s. Socket Error #%s: %s"
             self.event('socket_error', serr, direct=True)
-            log.error(error_msg, self.address[0], self.address[1],
+            domain = self.address[0]
+            if ':' in domain:
+                domain = '[%s]' % domain
+            log.error(error_msg, domain, self.address[1],
                                  serr.errno, serr.strerror)
-            self.reconnect_delay = delay
             return False
 
     def _connect_proxy(self):
@@ -554,7 +581,7 @@ class XMLStream(object):
                 self.session_timeout,
                 _handle_session_timeout)
 
-    def disconnect(self, reconnect=False, wait=None):
+    def disconnect(self, reconnect=False, wait=None, send_close=True):
         """Terminate processing and close the XML streams.
 
         Optionally, the connection may be reconnected and
@@ -575,13 +602,20 @@ class XMLStream(object):
         :param wait: Flag indicating if the send queue should
                      be emptied before disconnecting, overriding
                      :attr:`disconnect_wait`.
+        :param send_close: Flag indicating if the stream footer
+                           should be sent before terminating the
+                           connection. Setting this to ``False``
+                           prevents error loops when trying to
+                           disconnect after a socket error.
         """
         self.state.transition('connected', 'disconnected',
                               wait=2.0,
-                              func=self._disconnect, args=(reconnect, wait))
+                              func=self._disconnect, 
+                              args=(reconnect, wait, send_close))
 
-    def _disconnect(self, reconnect=False, wait=None):
-        self.event('session_end', direct=True)
+    def _disconnect(self, reconnect=False, wait=None, send_close=True):
+        if self.end_session_on_disconnect or send_close:
+            self.event('session_end', direct=True)
 
         # Wait for the send queue to empty.
         if wait is not None:
@@ -590,14 +624,24 @@ class XMLStream(object):
         elif self.disconnect_wait:
             self.send_queue.join()
 
-        # Send the end of stream marker.
-        self.send_raw(self.stream_footer, now=True)
+        # Clearing this event will pause the send loop.
         self.session_started_event.clear()
+
+        # Send the end of stream marker.
+        if send_close:
+            self.send_raw(self.stream_footer, now=True)
+
         # Wait for confirmation that the stream was
-        # closed in the other direction.
+        # closed in the other direction. If we didn't
+        # send a stream footer we don't need to wait
+        # since the server won't know to respond.
         self.auto_reconnect = reconnect
-        log.debug('Waiting for %s from server', self.stream_footer)
-        self.stream_end_event.wait(4)
+        if send_close:
+            log.info('Waiting for %s from server', self.stream_footer)
+            self.stream_end_event.wait(4)
+        else:
+            self.stream_end_event.set()
+
         if not self.auto_reconnect:
             self.stop.set()
         try:
@@ -611,20 +655,30 @@ class XMLStream(object):
             self.event("disconnected", direct=True)
             return True
 
-    def reconnect(self, reattempt=True):
+    def reconnect(self, reattempt=True, wait=False, send_close=True):
         """Reset the stream's state and reconnect to the server."""
         log.debug("reconnecting...")
         if self.state.ensure('connected'):
-            self.state.transition('connected', 'disconnected', wait=2.0,
-                                  func=self._disconnect, args=(True,))
+            self.state.transition('connected', 'disconnected', 
+                    wait=2.0,
+                    func=self._disconnect, 
+                    args=(True, wait, send_close))
+
+        attempts = self.reconnect_max_attempts
 
         log.debug("connecting...")
         connected = self.state.transition('disconnected', 'connected',
-                                          wait=2.0, func=self._connect)
+                                          wait=2.0, func=self._connect, args=(reattempt,))
         while reattempt and not connected and not self.stop.is_set():
             connected = self.state.transition('disconnected', 'connected',
                                               wait=2.0, func=self._connect)
             connected = connected or self.state.ensure('connected')
+            if not connected:
+                if attempts is not None:
+                    attempts -= 1
+                    if attempts <= 0:
+                        self.event('connection_failed', direct=True)
+                        return False
         return connected
 
     def set_socket(self, socket, ignore=False):
@@ -703,7 +757,8 @@ class XMLStream(object):
                 self.socket = ssl_socket
             self.socket.do_handshake()
 
-            cert = self.socket.getpeercert()
+            cert = self.socket.getpeercert(binary_form=True)
+            cert = ssl.DER_cert_to_PEM_cert(cert)
             log.debug('CERT: %s', cert)
             self.event('ssl_cert', cert, direct=True)
 
@@ -724,14 +779,11 @@ class XMLStream(object):
 
             self.whitespace_keepalive_interval = 300
         """
-
-        def send_keepalive():
-            if self.send_queue.empty():
-                self.send_raw(' ')
-
         self.schedule('Whitespace Keepalive',
                       self.whitespace_keepalive_interval,
-                      send_keepalive,
+                      self.send_raw,
+                      args = (' ',),
+                      kwargs = {'now': True},
                       repeat=True)
 
     def _end_keepalive(self, event):
@@ -859,50 +911,11 @@ class XMLStream(object):
         """
         if port is None:
             port = self.default_port
-        if DNSPYTHON:
-            resolver = dns.resolver.get_default_resolver()
-            self.configure_dns(resolver, domain=domain, port=port)
+            
+        resolver = default_resolver()
+        self.configure_dns(resolver, domain=domain, port=port)
 
-            v4_answers = []
-            v6_answers = []
-            answers = []
-
-            try:
-                log.debug("Querying A records for %s" % domain)
-                v4_answers = resolver.query(domain, dns.rdatatype.A)
-            except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
-                log.warning("No A records for %s", domain)
-                v4_answers = [((domain, port), 0, 0)]
-            except dns.exception.Timeout:
-                log.warning("DNS resolution timed out " + \
-                            "for A record of %s", domain)
-                v4_answers = [((domain, port), 0, 0)]
-            else:
-                for ans in v4_answers:
-                    log.debug("Found A record: %s", ans.address)
-                    answers.append(((ans.address, port), 0, 0))
-
-            try:
-                log.debug("Querying AAAA records for %s" % domain)
-                v6_answers = resolver.query(domain, dns.rdatatype.AAAA)
-            except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
-                log.warning("No AAAA records for %s", domain)
-                v6_answers = [((domain, port), 0, 0)]
-            except dns.exception.Timeout:
-                log.warning("DNS resolution timed out " + \
-                            "for AAAA record of %s", domain)
-                v6_answers = [((domain, port), 0, 0)]
-            else:
-                for ans in v6_answers:
-                    log.debug("Found AAAA record: %s", ans.address)
-                    answers.append(((ans.address, port), 0, 0))
-
-            return answers
-        else:
-            log.warning("dnspython is not installed -- " + \
-                        "relying on OS A/AAAA record resolution")
-            self.configure_dns(None, domain=domain, port=port)
-            return [((domain, port), 0, 0)]
+        return resolve(domain, port, service=self.dns_service, resolver=resolver)
 
     def pick_dns_answer(self, domain, port=None):
         """Pick a server and port from DNS answers.
@@ -915,33 +928,12 @@ class XMLStream(object):
         """
         if not self.dns_answers:
             self.dns_answers = self.get_dns_records(domain, port)
-        addresses = {}
-        intmax = 0
-        topprio = 65535
-        for answer in self.dns_answers:
-            topprio = min(topprio, answer[1])
-        for answer in self.dns_answers:
-            if answer[1] == topprio:
-                intmax += answer[2]
-                addresses[intmax] = answer[0]
 
-        #python3 returns a generator for dictionary keys
-        items = [x for x in addresses.keys()]
-        items.sort()
-
-        address = (domain, port)
-        picked = random.randint(0, intmax)
-        for item in items:
-            if picked <= item:
-                address = addresses[item]
-                break
-        for idx, answer in enumerate(self.dns_answers):
-            if self.dns_answers[0] == address:
-                self.dns_answers.pop(idx)
-                break
-        log.debug("Trying to connect to %s:%s", *address)
-        return address
-
+        if sys.version_info < (3, 0):
+            return self.dns_answers.next()
+        else:
+            return next(self.dns_answers)
+            
     def add_event_handler(self, name, pointer,
                           threaded=False, disposable=False):
         """Add a custom event handler that will be executed whenever
@@ -1051,7 +1043,7 @@ class XMLStream(object):
         """
         return xml
 
-    def send(self, data, mask=None, timeout=None, now=False):
+    def send(self, data, mask=None, timeout=None, now=False, use_filters=True):
         """A wrapper for :meth:`send_raw()` for sending stanza objects.
 
         May optionally block until an expected response is received.
@@ -1069,6 +1061,10 @@ class XMLStream(object):
                         sending the stanza immediately. Useful mainly
                         for stream initialization stanzas.
                         Defaults to ``False``.
+        :param bool use_filters: Indicates if outgoing filters should be
+                                 applied to the given stanza data. Disabling
+                                 filters is useful when resending stanzas.
+                                 Defaults to ``True``.
         """
         if timeout is None:
             timeout = self.response_timeout
@@ -1076,19 +1072,29 @@ class XMLStream(object):
             mask = mask.xml
 
         if isinstance(data, ElementBase):
-            for filter in self.__filters['out']:
-                if data is not None:
+            if use_filters:
+                for filter in self.__filters['out']:
                     data = filter(data)
-            if data is None:
-                return
+                    if data is None:
+                        return
 
-        data = str(data)
         if mask is not None:
             log.warning("Use of send mask waiters is deprecated.")
             wait_for = Waiter("SendWait_%s" % self.new_id(),
                               MatchXMLMask(mask))
             self.register_handler(wait_for)
-        self.send_raw(data, now)
+
+        if isinstance(data, ElementBase):
+            with self.send_queue_lock:
+                if use_filters:
+                    for filter in self.__filters['out_sync']:
+                        data = filter(data)
+                        if data is None:
+                            return
+                str_data = str(data)
+                self.send_raw(str_data, now)
+        else:
+            self.send_raw(data, now)
         if mask is not None:
             return wait_for.wait(timeout)
 
@@ -1131,21 +1137,22 @@ class XMLStream(object):
                 sent = 0
                 count = 0
                 tries = 0
-                while sent < total and not self.stop.is_set():
-                    try:
-                        sent += self.socket.send(data[sent:])
-                        count += 1
-                    except ssl.SSLError as serr:
-                        if tries >= self.ssl_retry_max:
-                            log.debug('SSL error - max retries reached')
-                            self.exception(serr)
-                            log.warning("Failed to send %s", data)
-                            if reconnect is None:
-                                reconnect = self.auto_reconnect
-                            self.disconnect(reconnect)
-                        log.warning('SSL write error - reattempting')
-                        time.sleep(self.ssl_retry_delay)
-                        tries += 1
+                with self.send_lock:
+                    while sent < total and not self.stop.is_set():
+                        try:
+                            sent += self.socket.send(data[sent:])
+                            count += 1
+                        except ssl.SSLError as serr:
+                            if tries >= self.ssl_retry_max:
+                                log.debug('SSL error - max retries reached')
+                                self.exception(serr)
+                                log.warning("Failed to send %s", data)
+                                if reconnect is None:
+                                    reconnect = self.auto_reconnect
+                                self.disconnect(reconnect, send_close=False)
+                            log.warning('SSL write error - reattempting')
+                            time.sleep(self.ssl_retry_delay)
+                            tries += 1
                 if count > 1:
                     log.debug('SENT: %d chunks', count)
             except Socket.error as serr:
@@ -1153,7 +1160,7 @@ class XMLStream(object):
                 log.warning("Failed to send %s", data)
                 if reconnect is None:
                     reconnect = self.auto_reconnect
-                self.disconnect(reconnect)
+                self.disconnect(reconnect, send_close=False)
         else:
             self.send_queue.put(data)
         return True
@@ -1250,7 +1257,7 @@ class XMLStream(object):
                 self.exception(e)
             except Socket.error as serr:
                 self.event('socket_error', serr, direct=True)
-                log.exception('Socket Error')
+                log.error('Socket Error #%s: %s', serr.errno, serr.strerror)
             except Exception as e:
                 if not self.stop.is_set():
                     log.exception('Connection error.')
@@ -1482,19 +1489,20 @@ class XMLStream(object):
                 count = 0
                 tries = 0
                 try:
-                    while sent < total and not self.stop.is_set():
-                        try:
-                            sent += self.socket.send(enc_data[sent:])
-                            count += 1
-                        except ssl.SSLError as serr:
-                            if tries >= self.ssl_retry_max:
-                                log.debug('SSL error - max retries reached')
-                                self.exception(serr)
-                                log.warning("Failed to send %s", data)
-                                self.disconnect(self.auto_reconnect)
-                            log.warning('SSL write error - reattempting')
-                            time.sleep(self.ssl_retry_delay)
-                            tries += 1
+                    with self.send_lock:
+                        while sent < total and not self.stop.is_set():
+                            try:
+                                sent += self.socket.send(enc_data[sent:])
+                                count += 1
+                            except ssl.SSLError as serr:
+                                if tries >= self.ssl_retry_max:
+                                    log.debug('SSL error - max retries reached')
+                                    self.exception(serr)
+                                    log.warning("Failed to send %s", data)
+                                    self.disconnect(self.auto_reconnect, send_close=False)
+                                log.warning('SSL write error - reattempting')
+                                time.sleep(self.ssl_retry_delay)
+                                tries += 1
                     if count > 1:
                         log.debug('SENT: %d chunks', count)
                     self.send_queue.task_done()
@@ -1502,7 +1510,7 @@ class XMLStream(object):
                     self.event('socket_error', serr, direct=True)
                     log.warning("Failed to send %s", data)
                     self.__failed_send_stanza = data
-                    self.disconnect(self.auto_reconnect)
+                    self.disconnect(self.auto_reconnect, send_close=False)
         except Exception as ex:
             log.exception('Unexpected error in send thread: %s', ex)
             self.exception(ex)

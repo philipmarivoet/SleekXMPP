@@ -13,24 +13,27 @@ from sleekxmpp.thirdparty.suelta.exceptions import SASLCancelled, SASLError
 
 from sleekxmpp.stanza import StreamFeatures
 from sleekxmpp.xmlstream import RestartStream, register_stanza_plugin
+from sleekxmpp.plugins import BasePlugin
 from sleekxmpp.xmlstream.matcher import MatchXPath
 from sleekxmpp.xmlstream.handler import Callback
-from sleekxmpp.plugins.base import base_plugin
 from sleekxmpp.features.feature_mechanisms import stanza
 
 
 log = logging.getLogger(__name__)
 
 
-class feature_mechanisms(base_plugin):
+class FeatureMechanisms(BasePlugin):
+
+    name = 'feature_mechanisms'
+    description = 'RFC 6120: Stream Feature: SASL'
+    dependencies = set()
+    stanza = stanza
 
     def plugin_init(self):
-        self.name = 'SASL Mechanisms'
-        self.rfc = '6120'
-        self.description = "SASL Stream Feature"
-        self.stanza = stanza
-
         self.use_mech = self.config.get('use_mech', None)
+
+        if not self.use_mech and not self.xmpp.boundjid.user:
+            self.use_mech = 'ANONYMOUS'
 
         def tls_active():
             return 'starttls' in self.xmpp.features
@@ -105,14 +108,17 @@ class feature_mechanisms(base_plugin):
             # server has incorrectly offered it again.
             return False
 
-        self.mech_list = set(features['mechanisms'])
+        if not self.use_mech:
+            self.mech_list = set(features['mechanisms'])
+        else:
+            self.mech_list = set([self.use_mech])
         return self._send_auth()
 
     def _send_auth(self):
         mech_list = self.mech_list - self.attempted_mechs
         self.mech = self.sasl.choose_mechanism(mech_list)
 
-        if self.mech is not None:
+        if mech_list and self.mech is not None:
             resp = stanza.Auth(self.xmpp)
             resp['mechanism'] = self.mech.name
             try:

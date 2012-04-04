@@ -10,6 +10,10 @@ from sleekxmpp.xmlstream import ET
 import base64
 import logging
 import time
+import sys
+
+if sys.version_info > (3, 0):
+    unicode = str
 
 log = logging.getLogger(__name__)
 
@@ -54,7 +58,7 @@ def _py2xml(*args):
             boolean = ET.Element("{%s}boolean" % _namespace)
             boolean.text = str(int(x))
             val.append(boolean)
-        elif type(x) is str:
+        elif type(x) in (str, unicode):
             string = ET.Element("{%s}string" % _namespace)
             string.text = x
             val.append(string)
@@ -166,7 +170,7 @@ class rpctime(object):
 
     def __init__(self,data=None):
         #assume string data is in iso format YYYYMMDDTHH:MM:SS
-        if type(data) is str:
+        if type(data) in (str, unicode):
             self.timestamp = time.strptime(data,"%Y%m%dT%H:%M:%S")
         elif type(data) is time.struct_time:
             self.timestamp = data

@@ -18,6 +18,7 @@ import logging
 
 from sleekxmpp.stanza import StreamFeatures
 from sleekxmpp.basexmpp import BaseXMPP
+from sleekxmpp.exceptions import XMPPError
 from sleekxmpp.xmlstream import XMLStream
 from sleekxmpp.xmlstream.matcher import MatchXPath
 from sleekxmpp.xmlstream.handler import Callback
@@ -83,6 +84,8 @@ class ClientXMPP(BaseXMPP):
         self._stream_feature_handlers = {}
         self._stream_feature_order = []
 
+        self.dns_service = 'xmpp-client'
+
         #TODO: Use stream state here
         self.authenticated = False
         self.sessionstarted = False
@@ -111,6 +114,7 @@ class ClientXMPP(BaseXMPP):
         self.register_plugin('feature_session')
         self.register_plugin('feature_mechanisms',
                 pconfig={'use_mech': sasl_mech} if sasl_mech else None)
+        self.register_plugin('feature_rosterver')
 
     @property
     def password(self):
@@ -137,42 +141,19 @@ class ClientXMPP(BaseXMPP):
                         should be used. Defaults to ``False``.
         """
         self.session_started_event.clear()
-        if not address:
+
+        # If an address was provided, disable using DNS SRV lookup;
+        # otherwise, use the domain from the client JID with the standard
+        # XMPP client port and allow SRV lookup.
+        if address:
+            self.dns_service = None
+        else:
             address = (self.boundjid.host, 5222)
+            self.dns_service = 'xmpp-client'
 
         return XMLStream.connect(self, address[0], address[1],
                                  use_tls=use_tls, use_ssl=use_ssl,
                                  reattempt=reattempt)
-
-    def get_dns_records(self, domain, port=None):
-        """Get the DNS records for a domain, including SRV records.
-
-        :param domain: The domain in question.
-        :param port: If the results don't include a port, use this one.
-        """
-        if port is None:
-            port = self.default_port
-        if DNSPYTHON:
-            try:
-                record = "_xmpp-client._tcp.%s" % domain
-                answers = []
-                log.debug("Querying SRV records for %s" % domain)
-                for answer in dns.resolver.query(record, dns.rdatatype.SRV):
-                    address = (answer.target.to_text()[:-1], answer.port)
-                    log.debug("Found SRV record: %s", address)
-                    answers.append((address, answer.priority, answer.weight))
-            except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
-                log.warning("No SRV records for %s", domain)
-                answers = super(ClientXMPP, self).get_dns_records(domain, port)
-            except dns.exception.Timeout:
-                log.warning("DNS resolution timed out " + \
-                            "for SRV record of %s", domain)
-                answers = super(ClientXMPP, self).get_dns_records(domain, port)
-            return answers
-        else:
-            log.warning("dnspython is not installed -- " + \
-                        "relying on OS A/AAAA record resolution")
-            return [((domain, port), 0, 0)]
 
     def register_feature(self, name, handler, restart=False, order=5000):
         """Register a stream feature handler.
@@ -240,6 +221,8 @@ class ClientXMPP(BaseXMPP):
         iq = self.Iq()
         iq['type'] = 'get'
         iq.enable('roster')
+        if 'rosterver' in self.features:
+            iq['roster']['ver'] = self.client_roster.version
 
         if not block and callback is None:
             callback = lambda resp: self._handle_roster(resp, request=True)
@@ -279,15 +262,22 @@ class ClientXMPP(BaseXMPP):
                         to a request for the roster, and not an
                         empty acknowledgement from the server.
         """
+        if iq['from'].bare and iq['from'].bare != self.boundjid.bare:
+            raise XMPPError(condition='service-unavailable')
         if iq['type'] == 'set' or (iq['type'] == 'result' and request):
+            roster = self.client_roster
+            if iq['roster']['ver']:
+                roster.version = iq['roster']['ver']
             for jid in iq['roster']['items']:
                 item = iq['roster']['items'][jid]
-                roster = self.roster[iq['to'].bare]
                 roster[jid]['name'] = item['name']
                 roster[jid]['groups'] = item['groups']
                 roster[jid]['from'] = item['subscription'] in ['from', 'both']
                 roster[jid]['to'] = item['subscription'] in ['to', 'both']
                 roster[jid]['pending_out'] = (item['ask'] == 'subscribe')
+
+                roster[jid].save(remove=(item['subscription'] == 'remove'))
+                     
             self.event('roster_received', iq)
 
         self.event("roster_update", iq)

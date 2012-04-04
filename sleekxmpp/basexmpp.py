@@ -31,6 +31,9 @@ from sleekxmpp.xmlstream import ET, register_stanza_plugin
 from sleekxmpp.xmlstream.matcher import MatchXPath
 from sleekxmpp.xmlstream.handler import Callback
 
+from sleekxmpp.features import *
+from sleekxmpp.plugins import PluginManager, register_plugin, load_plugin
+
 
 log = logging.getLogger(__name__)
 
@@ -66,7 +69,7 @@ class BaseXMPP(XMLStream):
         self.boundjid = JID(jid)
 
         #: A dictionary mapping plugin names to plugins.
-        self.plugin = {}
+        self.plugin = PluginManager(self)
 
         #: Configuration options for whitelisted plugins.
         #: If a plugin is registered without any configuration,
@@ -185,9 +188,18 @@ class BaseXMPP(XMLStream):
         - The send queue processor
         - The scheduler
         """
+        if 'xep_0115' in self.plugin:
+            name = 'xep_0115'
+            if not hasattr(self.plugin[name], 'post_inited'):
+                if hasattr(self.plugin[name], 'post_init'):
+                    self.plugin[name].post_init()
+                self.plugin[name].post_inited = True
+
         for name in self.plugin:
-            if not self.plugin[name].post_inited:
-                self.plugin[name].post_init()
+            if not hasattr(self.plugin[name], 'post_inited'):
+                if hasattr(self.plugin[name], 'post_init'):
+                    self.plugin[name].post_init()
+                self.plugin[name].post_inited = True
         return XMLStream.process(self, *args, **kwargs)
 
     def register_plugin(self, plugin, pconfig={}, module=None):
@@ -200,42 +212,14 @@ class BaseXMPP(XMLStream):
         :param module: Optional refence to the module containing the plugin
                        class if using custom plugins.
         """
-        try:
-            # Import the given module that contains the plugin.
-            if not module:
-                try:
-                    module = plugins
-                    module = __import__(
-                            str("%s.%s" % (module.__name__, plugin)),
-                            globals(), locals(), [str(plugin)])
-                except ImportError:
-                    module = features
-                    module = __import__(
-                            str("%s.%s" % (module.__name__, plugin)),
-                            globals(), locals(), [str(plugin)])
-            if isinstance(module, str):
-                # We probably want to load a module from outside
-                # the sleekxmpp package, so leave out the globals().
-                module = __import__(module, fromlist=[plugin])
 
-            # Use the global plugin config cache, if applicable
-            if not pconfig:
-                pconfig = self.plugin_config.get(plugin, {})
+        # Use the global plugin config cache, if applicable
+        if not pconfig:
+            pconfig = self.plugin_config.get(plugin, {})
 
-            # Load the plugin class from the module.
-            self.plugin[plugin] = getattr(module, plugin)(self, pconfig)
-
-            # Let XEP/RFC implementing plugins have some extra logging info.
-            spec = '(CUSTOM) %s'
-            if self.plugin[plugin].xep:
-                spec = "(XEP-%s) " % self.plugin[plugin].xep
-            elif self.plugin[plugin].rfc:
-                spec = "(RFC-%s) " % self.plugin[plugin].rfc
-
-            desc = (spec, self.plugin[plugin].description)
-            log.debug("Loaded Plugin %s %s" % desc)
-        except:
-            log.exception("Unable to load plugin: %s", plugin)
+        if not self.plugin.registered(plugin):
+            load_plugin(plugin, module)
+        self.plugin.enable(plugin, pconfig)
 
     def register_plugins(self):
         """Register and initialize all built-in plugins.
@@ -252,14 +236,9 @@ class BaseXMPP(XMLStream):
 
         for plugin in plugin_list:
             if plugin in plugins.__all__:
-                self.register_plugin(plugin,
-                                     self.plugin_config.get(plugin, {}))
+                self.register_plugin(plugin)
             else:
                 raise NameError("Plugin %s not in plugins.__all__." % plugin)
-
-        # Resolve plugin inter-dependencies.
-        for plugin in self.plugin:
-            self.plugin[plugin].post_init()
 
     def __getitem__(self, key):
         """Return a plugin given its name, if it has been registered."""
@@ -674,11 +653,15 @@ class BaseXMPP(XMLStream):
 
     def _handle_available(self, presence):
         pto = presence['to'].bare
+        if not pto:
+            pto = self.boundjid.bare
         pfrom = presence['from'].bare
         self.roster[pto][pfrom].handle_available(presence)
 
     def _handle_unavailable(self, presence):
         pto = presence['to'].bare
+        if not pto:
+            pto = self.boundjid.bare
         pfrom = presence['from'].bare
         self.roster[pto][pfrom].handle_unavailable(presence)
 
