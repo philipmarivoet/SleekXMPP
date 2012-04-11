@@ -33,6 +33,8 @@ class FileSocket(_fileobject):
         if data is not None:
             return data
 
+    def settimeout(self, timeout=None):
+        self._sock.settimeout(timeout)
 
 class Socket26(socket._socketobject):
 

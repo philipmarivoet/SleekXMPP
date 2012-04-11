@@ -1274,7 +1274,13 @@ class XMLStream(object):
         """Parse the incoming XML stream
         
         Stream events are raised for each received stanza.
-        """
+        """ 
+
+        # FIXME: we have to set the socket timeout back to none to avoid timeout exception
+        #        this would not be needed if SSL socket would throw the correct exception
+        #        when the socket read times out (should be socket.timeout instead of SSL.error)
+        self.filesocket.settimeout(None)
+
         depth = 0
         root = None
         for event, xml in ET.iterparse(self.filesocket, (b'end', b'start')):
