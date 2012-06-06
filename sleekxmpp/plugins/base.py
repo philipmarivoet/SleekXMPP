@@ -18,6 +18,10 @@ import logging
 import threading
 
 
+if sys.version_info >= (3, 0):
+    unicode = str
+
+
 log = logging.getLogger(__name__)
 
 
@@ -84,9 +88,11 @@ def load_plugin(name, module=None):
                 module = 'sleekxmpp.features.%s' % name
                 __import__(module)
                 mod = sys.modules[module]
-        else:
+        elif isinstance(module, (str, unicode)):
             __import__(module)
             mod = sys.modules[module]
+        else:
+            mod = module
 
         # Add older style plugins to the registry.
         if hasattr(mod, name):
@@ -269,6 +275,8 @@ class BasePlugin(object):
 
     def __init__(self, xmpp, config=None):
         self.xmpp = xmpp
+        if self.xmpp:
+            self.api = self.xmpp.api.wrap(self.name)
 
         #: A plugin's behaviour may be configurable, in which case those
         #: configuration settings will be provided as a dictionary.

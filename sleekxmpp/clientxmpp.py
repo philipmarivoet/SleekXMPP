@@ -20,7 +20,7 @@ from sleekxmpp.stanza import StreamFeatures
 from sleekxmpp.basexmpp import BaseXMPP
 from sleekxmpp.exceptions import XMPPError
 from sleekxmpp.xmlstream import XMLStream
-from sleekxmpp.xmlstream.matcher import MatchXPath
+from sleekxmpp.xmlstream.matcher import StanzaPath, MatchXPath
 from sleekxmpp.xmlstream.handler import Callback
 
 # Flag indicating if DNS SRV records are available for use.
@@ -103,9 +103,7 @@ class ClientXMPP(BaseXMPP):
                          self._handle_stream_features))
         self.register_handler(
                 Callback('Roster Update',
-                         MatchXPath('{%s}iq/{%s}query' % (
-                             self.default_ns,
-                             'jabber:iq:roster')),
+                         StanzaPath('iq@type=set/roster'),
                          self._handle_roster))
 
         # Setup default stream features
@@ -150,6 +148,8 @@ class ClientXMPP(BaseXMPP):
         else:
             address = (self.boundjid.host, 5222)
             self.dns_service = 'xmpp-client'
+
+        self._expected_server_name = self.boundjid.host
 
         return XMLStream.connect(self, address[0], address[1],
                                  use_tls=use_tls, use_ssl=use_ssl,
@@ -225,12 +225,13 @@ class ClientXMPP(BaseXMPP):
             iq['roster']['ver'] = self.client_roster.version
 
         if not block and callback is None:
-            callback = lambda resp: self._handle_roster(resp, request=True)
+            callback = lambda resp: self._handle_roster(resp)
 
         response = iq.send(block, timeout, callback)
+        self.event('roster_received', response)
 
         if block: 
-            self._handle_roster(response, request=True)
+            self._handle_roster(response)
             return response
 
     def _handle_connected(self, event=None):
@@ -254,37 +255,35 @@ class ClientXMPP(BaseXMPP):
                     # restarting the XML stream.
                     return True
 
-    def _handle_roster(self, iq, request=False):
+    def _handle_roster(self, iq):
         """Update the roster after receiving a roster stanza.
 
         :param iq: The roster stanza.
-        :param request: Indicates if this stanza is a response
-                        to a request for the roster, and not an
-                        empty acknowledgement from the server.
         """
-        if iq['from'].bare and iq['from'].bare != self.boundjid.bare:
-            raise XMPPError(condition='service-unavailable')
-        if iq['type'] == 'set' or (iq['type'] == 'result' and request):
-            roster = self.client_roster
-            if iq['roster']['ver']:
-                roster.version = iq['roster']['ver']
-            for jid in iq['roster']['items']:
-                item = iq['roster']['items'][jid]
-                roster[jid]['name'] = item['name']
-                roster[jid]['groups'] = item['groups']
-                roster[jid]['from'] = item['subscription'] in ['from', 'both']
-                roster[jid]['to'] = item['subscription'] in ['to', 'both']
-                roster[jid]['pending_out'] = (item['ask'] == 'subscribe')
+        if iq['type'] == 'set':
+            if iq['from'].bare and iq['from'].bare != self.boundjid.bare:
+                raise XMPPError(condition='service-unavailable')
 
-                roster[jid].save(remove=(item['subscription'] == 'remove'))
-                     
-            self.event('roster_received', iq)
+        roster = self.client_roster
+        if iq['roster']['ver']:
+            roster.version = iq['roster']['ver']
+        for jid in iq['roster']['items']:
+            item = iq['roster']['items'][jid]
+            roster[jid]['name'] = item['name']
+            roster[jid]['groups'] = item['groups']
+            roster[jid]['from'] = item['subscription'] in ['from', 'both']
+            roster[jid]['to'] = item['subscription'] in ['to', 'both']
+            roster[jid]['pending_out'] = (item['ask'] == 'subscribe')
 
+            roster[jid].save(remove=(item['subscription'] == 'remove'))
+                 
         self.event("roster_update", iq)
         if iq['type'] == 'set':
-            iq.reply()
-            iq.enable('roster')
-            iq.send()
+            resp = self.Iq(stype='result',
+                           sto=iq['from'],
+                           sid=iq['id'])
+            resp.enable('roster')
+            resp.send()
 
     def _handle_session_bind(self, jid):
         """Set the client roster to the JID set by the server.

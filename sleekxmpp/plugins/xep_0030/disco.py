@@ -118,16 +118,12 @@ class XEP_0030(BasePlugin):
                 'del_item', 'del_identities', 'del_features', 'cache_info',
                 'get_cached_info', 'supports', 'has_identity']
 
-        self.default_handlers = {}
-        self._handlers = {}
         for op in self._disco_ops:
-            self._add_disco_op(op, getattr(self.static, op))
+            self.api.register(getattr(self.static, op), op, default=True)
 
     def _add_disco_op(self, op, default_handler):
-        self.default_handlers[op] = default_handler
-        self._handlers[op] = {'global': default_handler,
-                              'jid': {},
-                              'node': {}}
+        self.api.register(default_handler, op)
+        self.api.register_default(default_handler, op)
 
     def set_node_handler(self, htype, jid=None, node=None, handler=None):
         """
@@ -173,20 +169,7 @@ class XEP_0030(BasePlugin):
                        assumed.
             handler -- The handler function to use.
         """
-        if htype not in self._disco_ops:
-            return
-        if jid is None and node is None:
-            self._handlers[htype]['global'] = handler
-        elif node is None:
-            self._handlers[htype]['jid'][jid] = handler
-        elif jid is None:
-            if self.xmpp.is_component:
-                jid = self.xmpp.boundjid.full
-            else:
-                jid = self.xmpp.boundjid.bare
-            self._handlers[htype]['node'][(jid, node)] = handler
-        else:
-            self._handlers[htype]['node'][(jid, node)] = handler
+        self.api.register(handler, htype, jid, node)
 
     def del_node_handler(self, htype, jid, node):
         """
@@ -209,7 +192,7 @@ class XEP_0030(BasePlugin):
             jid   -- The JID from which to remove the handler.
             node  -- The node from which to remove the handler.
         """
-        self.set_node_handler(htype, jid, node, None)
+        self.api.unregister(htype, jid, node)
 
     def restore_defaults(self, jid=None, node=None, handlers=None):
         """
@@ -232,8 +215,7 @@ class XEP_0030(BasePlugin):
         if handlers is None:
             handlers = self._disco_ops
         for op in handlers:
-            self.del_node_handler(op, jid, node)
-            self.set_node_handler(op, jid, node, self.default_handlers[op])
+            self.api.restore_default(op, jid, node)
 
     def supports(self, jid=None, node=None, feature=None, local=False,
                        cached=True, ifrom=None):
@@ -266,7 +248,7 @@ class XEP_0030(BasePlugin):
         data = {'feature': feature,
                 'local': local,
                 'cached': cached}
-        return self._run_node_handler('supports', jid, node, ifrom, data)
+        return self.api['supports'](jid, node, ifrom, data)
 
     def has_identity(self, jid=None, node=None, category=None, itype=None,
                      lang=None, local=False, cached=True, ifrom=None):
@@ -303,7 +285,7 @@ class XEP_0030(BasePlugin):
                 'lang': lang,
                 'local': local,
                 'cached': cached}
-        return self._run_node_handler('has_identity', jid, node, ifrom, data)
+        return self.api['has_identity'](jid, node, ifrom, data)
 
     def get_info(self, jid=None, node=None, local=False,
                        cached=None, **kwargs):
@@ -351,20 +333,24 @@ class XEP_0030(BasePlugin):
                 if str(jid) == str(self.xmpp.boundjid):
                     local = True
             jid = jid.full
+        elif jid in (None, ''):
+            local = True
 
-        if local or jid in (None, ''):
+        if local:
             log.debug("Looking up local disco#info data " + \
                       "for %s, node %s.", jid, node)
-            info = self._run_node_handler('get_info',
-                    jid, node, kwargs.get('ifrom', None), kwargs)
+            info = self.api['get_info'](jid, node, 
+                    kwargs.get('ifrom', None), 
+                    kwargs)
             info = self._fix_default_info(info)
             return self._wrap(kwargs.get('ifrom', None), jid, info)
 
         if cached:
             log.debug("Looking up cached disco#info data " + \
                       "for %s, node %s.", jid, node)
-            info = self._run_node_handler('get_cached_info',
-                    jid, node, kwargs.get('ifrom', None), kwargs)
+            info = self.api['get_cached_info'](jid, node, 
+                    kwargs.get('ifrom', None), 
+                    kwargs)
             if info is not None:
                 return self._wrap(kwargs.get('ifrom', None), jid, info)
 
@@ -385,7 +371,7 @@ class XEP_0030(BasePlugin):
         """
         if isinstance(info, Iq):
             info = info['disco_info']
-        self._run_node_handler('set_info', jid, node, None, info)
+        self.api['set_info'](jid, node, None, info)
 
     def get_items(self, jid=None, node=None, local=False, **kwargs):
         """
@@ -419,8 +405,9 @@ class XEP_0030(BasePlugin):
                         Otherwise the parameter is ignored.
         """
         if local or jid is None:
-            items = self._run_node_handler('get_items',
-                    jid, node, kwargs.get('ifrom', None), kwargs)
+            items = self.api['get_items'](jid, node, 
+                    kwargs.get('ifrom', None), 
+                    kwargs)
             return self._wrap(kwargs.get('ifrom', None), jid, items)
 
         iq = self.xmpp.Iq()
@@ -448,7 +435,7 @@ class XEP_0030(BasePlugin):
             node  -- Optional node to modify.
             items -- A series of items in tuple format.
         """
-        self._run_node_handler('set_items', jid, node, None, kwargs)
+        self.api['set_items'](jid, node, None, kwargs)
 
     def del_items(self, jid=None, node=None, **kwargs):
         """
@@ -458,7 +445,7 @@ class XEP_0030(BasePlugin):
             jid  -- The JID to modify.
             node -- Optional node to modify.
         """
-        self._run_node_handler('del_items', jid, node, None, kwargs)
+        self.api['del_items'](jid, node, None, kwargs)
 
     def add_item(self, jid='', name='', node=None, subnode='', ijid=None):
         """
@@ -479,7 +466,7 @@ class XEP_0030(BasePlugin):
         kwargs = {'ijid': jid,
                   'name': name,
                   'inode': subnode}
-        self._run_node_handler('add_item', ijid, node, None, kwargs)
+        self.api['add_item'](ijid, node, None, kwargs)
 
     def del_item(self, jid=None, node=None, **kwargs):
         """
@@ -491,7 +478,7 @@ class XEP_0030(BasePlugin):
             ijid  -- The item's JID.
             inode -- The item's node.
         """
-        self._run_node_handler('del_item', jid, node, None, kwargs)
+        self.api['del_item'](jid, node, None, kwargs)
 
     def add_identity(self, category='', itype='', name='',
                      node=None, jid=None, lang=None):
@@ -518,7 +505,7 @@ class XEP_0030(BasePlugin):
                   'itype': itype,
                   'name': name,
                   'lang': lang}
-        self._run_node_handler('add_identity', jid, node, None, kwargs)
+        self.api['add_identity'](jid, node, None, kwargs)
 
     def add_feature(self, feature, node=None, jid=None):
         """
@@ -530,7 +517,7 @@ class XEP_0030(BasePlugin):
             jid     -- The JID to modify.
         """
         kwargs = {'feature': feature}
-        self._run_node_handler('add_feature', jid, node, None, kwargs)
+        self.api['add_feature'](jid, node, None, kwargs)
 
     def del_identity(self, jid=None, node=None, **kwargs):
         """
@@ -544,7 +531,7 @@ class XEP_0030(BasePlugin):
             name     -- Optional, human readable name for the identity.
             lang     -- Optional, the identity's xml:lang value.
         """
-        self._run_node_handler('del_identity', jid, node, None, kwargs)
+        self.api['del_identity'](jid, node, None, kwargs)
 
     def del_feature(self, jid=None, node=None, **kwargs):
         """
@@ -555,7 +542,7 @@ class XEP_0030(BasePlugin):
             node    -- The node to modify.
             feature -- The feature's namespace.
         """
-        self._run_node_handler('del_feature', jid, node, None, kwargs)
+        self.api['del_feature'](jid, node, None, kwargs)
 
     def set_identities(self, jid=None, node=None, **kwargs):
         """
@@ -570,7 +557,7 @@ class XEP_0030(BasePlugin):
             identities -- A set of identities in tuple form.
             lang       -- Optional, xml:lang value.
         """
-        self._run_node_handler('set_identities', jid, node, None, kwargs)
+        self.api['set_identities'](jid, node, None, kwargs)
 
     def del_identities(self, jid=None, node=None, **kwargs):
         """
@@ -585,7 +572,7 @@ class XEP_0030(BasePlugin):
             lang -- Optional. If given, only remove identities
                     using this xml:lang value.
         """
-        self._run_node_handler('del_identities', jid, node, None, kwargs)
+        self.api['del_identities'](jid, node, None, kwargs)
 
     def set_features(self, jid=None, node=None, **kwargs):
         """
@@ -597,7 +584,7 @@ class XEP_0030(BasePlugin):
             node     -- The node to modify.
             features -- The new set of supported features.
         """
-        self._run_node_handler('set_features', jid, node, None, kwargs)
+        self.api['set_features'](jid, node, None, kwargs)
 
     def del_features(self, jid=None, node=None, **kwargs):
         """
@@ -607,7 +594,7 @@ class XEP_0030(BasePlugin):
             jid  -- The JID to modify.
             node -- The node to modify.
         """
-        self._run_node_handler('del_features', jid, node, None, kwargs)
+        self.api['del_features'](jid, node, None, kwargs)
 
     def _run_node_handler(self, htype, jid, node=None, ifrom=None, data={}):
         """
@@ -620,39 +607,7 @@ class XEP_0030(BasePlugin):
             node  -- The node requested.
             data  -- Optional, custom data to pass to the handler.
         """
-        if isinstance(jid, JID):
-            jid = jid.full
-
-        if jid in (None, ''):
-            if self.xmpp.is_component:
-                jid = self.xmpp.boundjid.full
-            else:
-                jid = self.xmpp.boundjid.bare
-        if node is None:
-            node = ''
-
-        try:
-            args = (jid, node, ifrom, data)
-            if self._handlers[htype]['node'].get((jid, node), False):
-                return self._handlers[htype]['node'][(jid, node)](*args)
-            elif self._handlers[htype]['jid'].get(jid, False):
-                return self._handlers[htype]['jid'][jid](*args)
-            elif self._handlers[htype]['global']:
-                return self._handlers[htype]['global'](*args)
-            else:
-                return None
-        except TypeError:
-            # To preserve backward compatibility, drop the ifrom parameter
-            # for existing handlers that don't understand it.
-            args = (jid, node, data)
-            if self._handlers[htype]['node'].get((jid, node), False):
-                return self._handlers[htype]['node'][(jid, node)](*args)
-            elif self._handlers[htype]['jid'].get(jid, False):
-                return self._handlers[htype]['jid'][jid](*args)
-            elif self._handlers[htype]['global']:
-                return self._handlers[htype]['global'](*args)
-            else:
-                return None
+        return self.api[htype](jid, node, ifrom, data)
 
     def _handle_disco_info(self, iq):
         """
@@ -671,12 +626,12 @@ class XEP_0030(BasePlugin):
                 jid = iq['to'].full
             else:
                 jid = iq['to'].bare
-            info = self._run_node_handler('get_info',
-                                          jid,
-                                          iq['disco_info']['node'],
-                                          iq['from'],
-                                          iq)
+            info = self.api['get_info'](jid,
+                                        iq['disco_info']['node'],
+                                        iq['from'],
+                                        iq)
             if isinstance(info, Iq):
+                info['id'] = iq['id']
                 info.send()
             else:
                 iq.reply()
@@ -694,8 +649,7 @@ class XEP_0030(BasePlugin):
                     ito = iq['to'].full
                 else:
                     ito = None
-                self._run_node_handler('cache_info',
-                                       iq['from'].full,
+                self.api['cache_info'](iq['from'].full,
                                        iq['disco_info']['node'],
                                        ito,
                                        iq)
@@ -717,8 +671,7 @@ class XEP_0030(BasePlugin):
                 jid = iq['to'].full
             else:
                 jid = iq['to'].bare
-            items = self._run_node_handler('get_items',
-                                          jid,
+            items = self.api['get_items'](jid,
                                           iq['disco_items']['node'],
                                           iq['from'].full,
                                           iq)

@@ -18,11 +18,13 @@ __all__ = [
     'xep_0004',  # Data Forms
     'xep_0009',  # Jabber-RPC
     'xep_0012',  # Last Activity
+    'xep_0027',  # Current Jabber OpenPGP Usage
     'xep_0030',  # Service Discovery
     'xep_0033',  # Extended Stanza Addresses
     'xep_0045',  # Multi-User Chat (Client)
     'xep_0047',  # In-Band Bytestreams
     'xep_0050',  # Ad-hoc Commands
+    'xep_0054',  # vcard-temp
     'xep_0059',  # Result Set Management
     'xep_0060',  # Pubsub (Client)
     'xep_0066',  # Out of Band Data
@@ -38,6 +40,7 @@ __all__ = [
     'xep_0115',  # Entity Capabilities
     'xep_0118',  # User Tune
     'xep_0128',  # Extended Service Discovery
+    'xep_0153',  # vCard-Based Avatars
     'xep_0163',  # Personal Eventing Protocol
     'xep_0172',  # User Nickname
     'xep_0184',  # Message Receipts
@@ -46,5 +49,6 @@ __all__ = [
     'xep_0202',  # Entity Time
     'xep_0203',  # Delayed Delivery
     'xep_0224',  # Attention
+    'xep_0231',  # Bits of Binary
     'xep_0249',  # Direct MUC Invitations
 ]

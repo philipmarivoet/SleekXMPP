@@ -19,6 +19,7 @@ import logging
 
 import sleekxmpp
 from sleekxmpp import plugins, features, roster
+from sleekxmpp.api import APIRegistry
 from sleekxmpp.exceptions import IqError, IqTimeout
 
 from sleekxmpp.stanza import Message, Presence, Iq, StreamError
@@ -67,6 +68,7 @@ class BaseXMPP(XMLStream):
 
         #: The JabberID (JID) used by this connection. 
         self.boundjid = JID(jid)
+        self._expected_server_name = self.boundjid.host
 
         #: A dictionary mapping plugin names to plugins.
         self.plugin = PluginManager(self)
@@ -96,6 +98,22 @@ class BaseXMPP(XMLStream):
         #: important, primarily for choosing how to handle the
         #: ``'to'`` and ``'from'`` JIDs of stanzas.
         self.is_component = False
+
+        #: The API registry is a way to process callbacks based on
+        #: JID+node combinations. Each callback in the registry is
+        #: marked with:
+        #: 
+        #:   - An API name, e.g. xep_0030
+        #:   - The name of an action, e.g. get_info
+        #:   - The JID that will be affected
+        #:   - The node that will be affected
+        #:
+        #: API handlers with no JID or node will act as global handlers,
+        #: while those with a JID and no node will service all nodes
+        #: for a JID, and handlers with both a JID and node will be
+        #: used only for that specific combination. The handler that
+        #: provides the most specificity will be used.
+        self.api = APIRegistry(self)
 
         #: Flag indicating that the initial presence broadcast has
         #: been sent. Until this happens, some servers may not
@@ -649,19 +667,17 @@ class BaseXMPP(XMLStream):
 
     def _handle_message(self, msg):
         """Process incoming message stanzas."""
+        if not self.is_component and not msg['to'].bare:
+            msg['to'] = self.boundjid
         self.event('message', msg)
 
     def _handle_available(self, presence):
         pto = presence['to'].bare
-        if not pto:
-            pto = self.boundjid.bare
         pfrom = presence['from'].bare
         self.roster[pto][pfrom].handle_available(presence)
 
     def _handle_unavailable(self, presence):
         pto = presence['to'].bare
-        if not pto:
-            pto = self.boundjid.bare
         pfrom = presence['from'].bare
         self.roster[pto][pfrom].handle_unavailable(presence)
 
@@ -718,6 +734,9 @@ class BaseXMPP(XMLStream):
 
         Update the roster with presence information.
         """
+        if not self.is_component and not presence['to'].bare:
+            presence['to'] = self.boundjid
+
         self.event("presence_%s" % presence['type'], presence)
 
         # Check for changes in subscription state.

@@ -36,6 +36,7 @@ class XEP_0115(BasePlugin):
 
     def plugin_init(self):
         self.hashes = {'sha-1': hashlib.sha1, 
+                       'sha1': hashlib.sha1,
                        'md5': hashlib.md5}
 
         self.hash = self.config.get('hash', 'sha-1')
@@ -77,8 +78,10 @@ class XEP_0115(BasePlugin):
         disco = self.xmpp['xep_0030']
         self.static = StaticCaps(self.xmpp, disco.static)
 
+        self.api.settings['client_bare'] = False
+        self.api.settings['component_bare'] = False
         for op in self._disco_ops:
-            disco._add_disco_op(op, getattr(self.static, op))
+            self.api.register(getattr(self.static, op), op, default=True)
 
         self._run_node_handler = disco._run_node_handler
 
@@ -125,21 +128,21 @@ class XEP_0115(BasePlugin):
         if pres['caps']['hash'] not in self.hashes:
             try:
                 log.debug("Unknown caps hash: %s", pres['caps']['hash'])
-                self.xmpp['xep_003'].get_info(jid=pres['from'].full)
+                self.xmpp['xep_0030'].get_info(jid=pres['from'])
                 return
             except XMPPError:
                 return
    
         log.debug("New caps verification string: %s", pres['caps']['ver'])
         try:
-            caps = self.xmpp['xep_0030'].get_info(
-                    jid=pres['from'].full,
-                    node='%s#%s' % (pres['caps']['node'],
-                                    pres['caps']['ver']))
+            node = '%s#%s' % (pres['caps']['node'], pres['caps']['ver'])
+            caps = self.xmpp['xep_0030'].get_info(pres['from'], node)
+
+            if isinstance(caps, Iq):
+                caps = caps['disco_info']
                     
-            if self._validate_caps(caps['disco_info'], 
-                                   pres['caps']['hash'],
-                                   pres['caps']['ver']):
+            if self._validate_caps(caps, pres['caps']['hash'],
+                                         pres['caps']['ver']):
                 self.assign_verstring(pres['from'], pres['caps']['ver'])
         except XMPPError:
             log.debug("Could not retrieve disco#info results for caps")
@@ -279,19 +282,19 @@ class XEP_0115(BasePlugin):
             jid = self.xmpp.boundjid.full
         if isinstance(jid, JID):
             jid = jid.full
-        return self._run_node_handler('get_verstring', jid)
+        return self.api['get_verstring'](jid)
 
     def assign_verstring(self, jid=None, verstring=None):
         if jid in (None, ''):
             jid = self.xmpp.boundjid.full
         if isinstance(jid, JID):
             jid = jid.full
-        return self._run_node_handler('assign_verstring', jid, 
-                                      data={'verstring': verstring})
+        return self.api['assign_verstring'](jid, args={
+            'verstring': verstring})
 
     def cache_caps(self, verstring=None, info=None):
         data = {'verstring': verstring, 'info': info}
-        return self._run_node_handler('cache_caps', None, None, data=data)
+        return self.api['cache_caps'](args=data)
 
     def get_caps(self, jid=None, verstring=None):
         if verstring is None:
@@ -302,4 +305,4 @@ class XEP_0115(BasePlugin):
         if isinstance(jid, JID):
             jid = jid.full
         data = {'verstring': verstring}
-        return self._run_node_handler('get_caps', jid, None, None, data)
+        return self.api['get_caps'](jid, args=data)

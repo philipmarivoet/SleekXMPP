@@ -208,30 +208,22 @@ class StateMachine(object):
             if not state in self.__states:
                 raise ValueError("StateMachine does not contain state '%s'" % state)
 
-        with self.lock:
-            # if we're in the middle of a transition, determine whether we should
-            # 'fall back' to the 'current' state, or wait for the new state, in order to
-            # avoid an operation occurring in the wrong state.
-
-            start = time.time()
-            if block_on_transition:
-                while self.__in_transition:
-                    # wait for the transition to complete
-                    # TODO: in the previous code there was not timeout here
-                    #       must check if timeout is preferable
-                    remainder = start + wait - time.time()
-                    if remainder > 0: 
-                        self.lock.wait(remainder)
-                    else: 
-                        return False
-
-            while not self.__current_state in states:
-                # detect timeout:
-                remainder = start + wait - time.time()
-                if remainder > 0: 
-                    self.lock.wait(remainder)
-                else: 
-                    return False
+        # if we're in the middle of a transition, determine whether we should
+        # 'fall back' to the 'current' state, or wait for the new state, in order to
+        # avoid an operation occurring in the wrong state.
+        # TODO another option would be an ensure_ctx that uses a semaphore to allow
+        # threads to indicate they want to remain in a particular state.
+        self.lock.acquire()
+        start = time.time()
+        while not self.__current_state in states:
+            # detect timeout:
+            remainder = start + wait - time.time()
+            if remainder > 0: 
+                self.lock.wait(remainder)
+            else: 
+                self.lock.release()
+                return False
+        self.lock.release()
         return True
 
     def reset(self):
